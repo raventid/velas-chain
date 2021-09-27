@@ -45,8 +45,8 @@ impl RPCTopicFilter {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RPCLogFilter {
-    pub from_block: Option<String>,
-    pub to_block: Option<String>,
+    pub from_block: Option<BlockId>,
+    pub to_block: Option<BlockId>,
     pub address: Option<Hex<Address>>,
     pub topics: Option<Vec<Option<RPCTopicFilter>>>,
 }
@@ -304,11 +304,260 @@ pub struct RPCDumpAccountBasic {
     // pub root: Hex<H256>,
     // pub storage: HashMap<Hex<U256>, Hex<U256>>,
 }
+
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(untagged)]
+pub enum BlockId {
+    Num(Hex<u64>),
+    BlockHash {
+        #[serde(rename = "blockHash")]
+        block_hash: Hex<H256>,
+    },
+    RelativeId(BlockRelId),
+}
+
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub enum BlockRelId {
+    Latest,
+    Pending,
+    Earliest,
+}
+
+impl Default for BlockId {
+    fn default() -> Self {
+        Self::RelativeId(BlockRelId::Latest)
+    }
+}
+
+impl From<u64> for BlockId {
+    fn from(b: u64) -> BlockId {
+        BlockId::Num(Hex(b))
+    }
+}
+pub mod trace {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Res {
+        gas_used: Hex<U256>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "address")]
+        contract: Option<Address>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<Bytes>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<Bytes>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "type", content = "action")]
+    #[serde(rename_all = "snake_case")]
+    pub enum Action {
+        Call {
+            from: Hex<Address>,
+            to: Hex<Address>,
+            value: Hex<U256>,
+            gas: Hex<U256>,
+            input: Bytes,
+            // #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(rename = "callType")]
+            call_type: CallScheme,
+        },
+        Create {
+            #[serde(rename = "from")]
+            caller: Hex<Address>,
+            value: Hex<U256>,
+            gas: Hex<U256>,
+            #[serde(rename = "init")]
+            init_code: Bytes,
+            #[serde(rename = "creationMethod")]
+            creation_method: CreateScheme,
+        },
+        // TODO: Trace suicide?!
+        // Suicide {
+        //     address: Address,
+        //     refund_address: Address,
+        //     balance: U256,
+        // },
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Trace {
+        #[serde(flatten)]
+        pub action: Action,
+        pub result: Res,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub error: Option<String>,
+        pub subtraces: Hex<usize>,
+        pub trace_address: Vec<usize>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct TraceResultsWithTransactionHash {
+        pub output: Bytes,
+        pub trace: Vec<Trace>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub block_hash: Option<Hex<H256>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub block_number: Option<Hex<U256>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub transaction_hash: Option<Hex<H256>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub transaction_index: Option<Hex<usize>>,
+    }
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum CallScheme {
+        Call,
+        CallCode,
+        DelegateCall,
+        StaticCall,
+    }
+
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum CreateScheme {
+        Create,
+        Create2,
+        Unimplemented,
+    }
+
+    impl From<evm_state::CallScheme> for CallScheme {
+        fn from(scheme: evm_state::CallScheme) -> Self {
+            match scheme {
+                evm_state::CallScheme::Call => Self::Call,
+                evm_state::CallScheme::CallCode => Self::CallCode,
+                evm_state::CallScheme::DelegateCall => Self::DelegateCall,
+                evm_state::CallScheme::StaticCall => Self::StaticCall,
+            }
+        }
+    }
+    impl From<evm_state::CreateScheme> for CreateScheme {
+        fn from(scheme: evm_state::CreateScheme) -> Self {
+            match scheme {
+                evm_state::CreateScheme::Legacy { .. } => Self::Create,
+                evm_state::CreateScheme::Create2 { .. } => Self::Create2,
+                _ => Self::Unimplemented,
+            }
+        }
+    }
+    impl From<evm_state::executor::Trace> for Trace {
+        fn from(trace: evm_state::executor::Trace) -> Self {
+            let (result, error) = Self::result_from(trace.result);
+            Self {
+                action: trace.action.into(),
+                result,
+                error,
+                subtraces: trace.subtraces.into(),
+                trace_address: trace.trace_address.into_iter().map(From::from).collect(),
+            }
+        }
+    }
+    impl From<evm_state::executor::Action> for Action {
+        fn from(action: evm_state::executor::Action) -> Self {
+            match action {
+                evm_state::executor::Action::Call {
+                    code,
+                    input,
+                    context,
+                    gas,
+                    call_type,
+                } => Self::Call {
+                    input: input.into(),
+                    from: context.caller.into(),
+                    to: code.into(),
+                    gas: gas.into(),
+                    value: context.apparent_value.into(),
+                    call_type: call_type.map(From::from).unwrap_or(CallScheme::Call),
+                },
+                evm_state::executor::Action::Create {
+                    caller,
+                    value,
+                    gas,
+                    init_code,
+                    creation_method,
+                } => Self::Create {
+                    caller: caller.into(),
+                    value: value.into(),
+                    gas: gas.into(),
+                    init_code: init_code.into(),
+                    creation_method: creation_method.into(),
+                },
+            }
+        }
+    }
+    impl Trace {
+        fn result_from(result: evm_state::executor::Res) -> (Res, Option<String>) {
+            // TODO: Add rest errors panic!()/todo!(), and other keywords for better search.
+            let error = match result.reason {
+                evm_state::ExitReason::Succeed(_) => None,
+                evm_state::ExitReason::Revert(_) => {
+                    let reason = super::error::format_data(&Bytes(result.output.clone()));
+                    Some(if reason.is_empty() {
+                        String::from("Execution reverted")
+                    } else {
+                        format!("Execution reverted:{}", reason)
+                    })
+                }
+                evm_state::ExitReason::Error(evm_state::ExitError::OutOfGas) => {
+                    Some(String::from("Out of gas"))
+                }
+                evm_state::ExitReason::Error(evm_state::ExitError::InvalidJump) => {
+                    Some(String::from("Invalid jump"))
+                }
+                evm_state::ExitReason::Error(evm_state::ExitError::StackUnderflow) => {
+                    Some(String::from("Stack underflow"))
+                }
+                evm_state::ExitReason::Error(evm_state::ExitError::StackOverflow) => {
+                    Some(String::from("Stack overflow"))
+                }
+                evm_state::ExitReason::Error(evm_state::ExitError::DesignatedInvalid) => {
+                    Some(String::from("Invalid instruction"))
+                }
+                evm_state::ExitReason::Error(e) => Some(format!("Internal error: {:?}", e)),
+                evm_state::ExitReason::Fatal(f) => Some(format!("Fatal error: {:?}", f)),
+            };
+            let (output, code) = if error.is_some() {
+                (None, None)
+            } else if result.contract.is_none() {
+                // If contract, output = code
+                (Some(result.output.into()), None)
+            } else {
+                (None, Some(result.output.into()))
+            };
+            (
+                Res {
+                    gas_used: result.gas_used.into(),
+                    contract: result.contract,
+                    code,
+                    output,
+                },
+                error,
+            )
+        }
+    }
+
+    #[derive(Default, Clone, Serialize, Deserialize)]
+    pub struct TraceMeta {
+        pub meta_keys: Option<Vec<String>>,
+        pub transaction_hash: Option<H256>,
+        pub transaction_index: Option<usize>,
+        pub block_hash: Option<H256>,
+        pub block_number: Option<U256>,
+    }
+}
+
 pub use basic::BasicERPC;
 pub use bridge::BridgeERPC;
 pub use chain_mock::ChainMockERPC;
 
 pub mod basic {
+    use super::trace::TraceMeta;
     use super::*;
 
     #[rpc]
@@ -323,7 +572,7 @@ pub mod basic {
             &self,
             meta: Self::Metadata,
             address: Hex<Address>,
-            block: Option<String>,
+            block: Option<BlockId>,
         ) -> Result<Hex<U256>, Error>;
 
         #[rpc(meta, name = "eth_getStorageAt")]
@@ -332,7 +581,7 @@ pub mod basic {
             meta: Self::Metadata,
             address: Hex<Address>,
             data: Hex<H256>,
-            block: Option<String>,
+            block: Option<BlockId>,
         ) -> Result<Hex<H256>, Error>;
 
         #[rpc(meta, name = "eth_getTransactionCount")]
@@ -340,7 +589,7 @@ pub mod basic {
             &self,
             meta: Self::Metadata,
             address: Hex<Address>,
-            block: Option<String>,
+            block: Option<BlockId>,
         ) -> Result<Hex<U256>, Error>;
 
         #[rpc(meta, name = "eth_getCode")]
@@ -348,8 +597,24 @@ pub mod basic {
             &self,
             meta: Self::Metadata,
             address: Hex<Address>,
-            block: Option<String>,
+            block: Option<BlockId>,
         ) -> Result<Bytes, Error>;
+
+        #[rpc(meta, name = "eth_getBlockByHash")]
+        fn block_by_hash(
+            &self,
+            meta: Self::Metadata,
+            block_hash: Hex<H256>,
+            full: bool,
+        ) -> Result<Option<RPCBlock>, Error>;
+
+        #[rpc(meta, name = "eth_getBlockByNumber")]
+        fn block_by_number(
+            &self,
+            meta: Self::Metadata,
+            block: BlockId,
+            full: bool,
+        ) -> Result<Option<RPCBlock>, Error>;
 
         #[rpc(meta, name = "eth_getTransactionByHash")]
         fn transaction_by_hash(
@@ -370,19 +635,55 @@ pub mod basic {
             &self,
             meta: Self::Metadata,
             tx: RPCTransaction,
-            block: Option<String>,
+            block: Option<BlockId>,
             meta_keys: Option<Vec<String>>,
         ) -> Result<Bytes, Error>;
 
         #[rpc(meta, name = "eth_gasPrice")]
         fn gas_price(&self, meta: Self::Metadata) -> Result<Hex<Gas>, Error>;
 
+        #[rpc(meta, name = "trace_call")]
+        fn trace_call(
+            &self,
+            meta: Self::Metadata,
+            tx: RPCTransaction,
+            traces: Vec<String>,
+            block: Option<BlockId>,
+            meta_info: Option<TraceMeta>,
+        ) -> Result<trace::TraceResultsWithTransactionHash, Error>;
+
+        #[rpc(meta, name = "trace_callMany")]
+        fn trace_call_many(
+            &self,
+            meta: Self::Metadata,
+            tx_traces: Vec<(RPCTransaction, Vec<String>, Option<TraceMeta>)>,
+            block: Option<BlockId>,
+        ) -> Result<Vec<trace::TraceResultsWithTransactionHash>, Error>;
+
+        #[rpc(meta, name = "trace_replayTransaction")]
+        fn trace_replay_transaction(
+            &self,
+            meta: Self::Metadata,
+            tx_hash: Hex<H256>,
+            traces: Vec<String>,
+            meta_info: Option<TraceMeta>,
+        ) -> Result<Option<trace::TraceResultsWithTransactionHash>, Error>;
+
+        #[rpc(meta, name = "trace_replayBlockTransactions")]
+        fn trace_replay_block(
+            &self,
+            meta: Self::Metadata,
+            block: BlockId,
+            traces: Vec<String>,
+            meta_info: Option<TraceMeta>,
+        ) -> Result<Vec<trace::TraceResultsWithTransactionHash>, Error>;
+
         #[rpc(meta, name = "eth_estimateGas")]
         fn estimate_gas(
             &self,
             meta: Self::Metadata,
             tx: RPCTransaction,
-            block: Option<String>,
+            block: Option<BlockId>,
             meta_keys: Option<Vec<String>>,
         ) -> Result<Hex<Gas>, Error>;
 
@@ -434,22 +735,6 @@ pub mod chain_mock {
 
         #[rpc(meta, name = "eth_hashrate")]
         fn hashrate(&self, meta: Self::Metadata) -> Result<String, Error>;
-
-        #[rpc(meta, name = "eth_getBlockByHash")]
-        fn block_by_hash(
-            &self,
-            meta: Self::Metadata,
-            block_hash: Hex<H256>,
-            full: bool,
-        ) -> Result<Option<RPCBlock>, Error>;
-
-        #[rpc(meta, name = "eth_getBlockByNumber")]
-        fn block_by_number(
-            &self,
-            meta: Self::Metadata,
-            block: String,
-            full: bool,
-        ) -> Result<Option<RPCBlock>, Error>;
 
         #[rpc(meta, name = "eth_getUncleByBlockHashAndIndex")]
         fn uncle_by_block_hash_and_index(
@@ -823,5 +1108,51 @@ impl From<LogWithLocation> for RPCLog {
             topics: log.topics.into_iter().map(Hex).collect(),
             data: Bytes(log.data),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    fn test_block_id() {
+        println!(
+            "{}",
+            serde_json::to_string(&BlockId::Num(Hex(1234))).unwrap()
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&BlockId::RelativeId(BlockRelId::Latest)).unwrap()
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&BlockId::RelativeId(BlockRelId::Pending)).unwrap()
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&BlockId::RelativeId(BlockRelId::Earliest)).unwrap()
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&BlockId::BlockHash {
+                block_hash: Hex(H256::repeat_byte(0xde))
+            })
+            .unwrap()
+        );
+
+        let block: BlockId = serde_json::from_str("\"0x123\"").unwrap();
+        assert!(matches!(block, BlockId::Num(Hex(0x123u64))));
+        let block: BlockId = serde_json::from_str("\"latest\"").unwrap();
+        assert!(matches!(block, BlockId::RelativeId(BlockRelId::Latest)));
+        let block: BlockId = serde_json::from_str("\"pending\"").unwrap();
+        assert!(matches!(block, BlockId::RelativeId(BlockRelId::Pending)));
+        let block: BlockId = serde_json::from_str("\"earliest\"").unwrap();
+        assert!(matches!(block, BlockId::RelativeId(BlockRelId::Earliest)));
+        let block : BlockId = serde_json::from_str("{\"blockHash\":\"0xdededededededededededededededededededededededededededededededede\"}").unwrap();
+        assert!(
+            matches!(block, BlockId::BlockHash{block_hash} if block_hash == Hex(H256::repeat_byte(0xde)))
+        );
     }
 }

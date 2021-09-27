@@ -14,6 +14,7 @@ use evm_rpc::basic::BasicERPC;
 use evm_rpc::bridge::BridgeERPC;
 use evm_rpc::chain_mock::ChainMockERPC;
 use evm_rpc::error::{Error, *};
+use evm_rpc::trace::TraceMeta;
 use evm_rpc::*;
 use evm_state::*;
 use sha3::{Digest, Keccak256};
@@ -462,13 +463,16 @@ impl EvmBridge {
         Ok(())
     }
 
-    fn block_to_number(&self, block: Option<String>) -> EvmResult<u64> {
-        let block = block.unwrap_or_else(|| "latest".to_string());
-        let block_string = match &*block {
-            "latest" => proxy_evm_rpc!(self.rpc_client, EthBlockNumber)?,
-            _ => block,
+    fn block_to_number(&self, block: Option<BlockId>) -> EvmResult<u64> {
+        let block = block.unwrap_or_default();
+        let block_num = match block {
+            BlockId::Num(block) => block.0,
+            BlockId::RelativeId(BlockRelId::Latest) => {
+                proxy_evm_rpc!(self.rpc_client, EthBlockNumber)?
+            }
+            _ => return Err(Error::BlockNotFound { block }),
         };
-        Hex::<u64>::from_hex(&block_string).map(|f| f.0)
+        return Ok(block_num);
     }
 }
 
@@ -617,34 +621,6 @@ impl ChainMockERPC for ChainMockErpcProxy {
         Ok(String::from("0x00"))
     }
 
-    fn block_by_hash(
-        &self,
-        meta: Self::Metadata,
-        block_hash: Hex<H256>,
-        full: bool,
-    ) -> EvmResult<Option<RPCBlock>> {
-        if block_hash == Hex(H256::zero()) {
-            Ok(Some(RPCBlock::default()))
-        } else {
-            proxy_evm_rpc!(meta.rpc_client, EthGetBlockByHash, block_hash, full)
-                .map(|o: Option<_>| o.map(compatibility::patch_block))
-        }
-    }
-
-    fn block_by_number(
-        &self,
-        meta: Self::Metadata,
-        block: String,
-        full: bool,
-    ) -> EvmResult<Option<RPCBlock>> {
-        if block == "0x0" {
-            Ok(Some(RPCBlock::default()))
-        } else {
-            proxy_evm_rpc!(meta.rpc_client, EthGetBlockByNumber, block, full)
-                .map(|o: Option<_>| o.map(compatibility::patch_block))
-        }
-    }
-
     fn block_transaction_count_by_number(
         &self,
         _meta: Self::Metadata,
@@ -727,7 +703,7 @@ impl BasicERPC for BasicErpcProxy {
         &self,
         meta: Self::Metadata,
         address: Hex<Address>,
-        block: Option<String>,
+        block: Option<BlockId>,
     ) -> EvmResult<Hex<U256>> {
         proxy_evm_rpc!(meta.rpc_client, EthGetBalance, address, block)
     }
@@ -737,7 +713,7 @@ impl BasicERPC for BasicErpcProxy {
         meta: Self::Metadata,
         address: Hex<Address>,
         data: Hex<H256>,
-        block: Option<String>,
+        block: Option<BlockId>,
     ) -> EvmResult<Hex<H256>> {
         proxy_evm_rpc!(meta.rpc_client, EthGetStorageAt, address, data, block)
     }
@@ -746,7 +722,7 @@ impl BasicERPC for BasicErpcProxy {
         &self,
         meta: Self::Metadata,
         address: Hex<Address>,
-        block: Option<String>,
+        block: Option<BlockId>,
     ) -> EvmResult<Hex<U256>> {
         proxy_evm_rpc!(meta.rpc_client, EthGetTransactionCount, address, block)
     }
@@ -755,9 +731,37 @@ impl BasicERPC for BasicErpcProxy {
         &self,
         meta: Self::Metadata,
         address: Hex<Address>,
-        block: Option<String>,
+        block: Option<BlockId>,
     ) -> EvmResult<Bytes> {
         proxy_evm_rpc!(meta.rpc_client, EthGetCode, address, block)
+    }
+
+    fn block_by_hash(
+        &self,
+        meta: Self::Metadata,
+        block_hash: Hex<H256>,
+        full: bool,
+    ) -> EvmResult<Option<RPCBlock>> {
+        if block_hash == Hex(H256::zero()) {
+            Ok(Some(RPCBlock::default()))
+        } else {
+            proxy_evm_rpc!(meta.rpc_client, EthGetBlockByHash, block_hash, full)
+                .map(|o: Option<_>| o.map(compatibility::patch_block))
+        }
+    }
+
+    fn block_by_number(
+        &self,
+        meta: Self::Metadata,
+        block: BlockId,
+        full: bool,
+    ) -> EvmResult<Option<RPCBlock>> {
+        if block == BlockId::Num(0x0.into()) {
+            Ok(Some(RPCBlock::default()))
+        } else {
+            proxy_evm_rpc!(meta.rpc_client, EthGetBlockByNumber, block, full)
+                .map(|o: Option<_>| o.map(compatibility::patch_block))
+        }
     }
 
     fn transaction_by_hash(
@@ -781,17 +785,69 @@ impl BasicERPC for BasicErpcProxy {
         &self,
         meta: Self::Metadata,
         tx: RPCTransaction,
-        block: Option<String>,
+        block: Option<BlockId>,
         meta_keys: Option<Vec<String>>,
     ) -> EvmResult<Bytes> {
         proxy_evm_rpc!(meta.rpc_client, EthCall, tx, block, meta_keys)
+    }
+
+    fn trace_call(
+        &self,
+        meta: Self::Metadata,
+        tx: RPCTransaction,
+        traces: Vec<String>,
+        block: Option<BlockId>,
+        meta_info: Option<TraceMeta>,
+    ) -> EvmResult<evm_rpc::trace::TraceResultsWithTransactionHash> {
+        proxy_evm_rpc!(meta.rpc_client, EthTraceCall, tx, traces, block, meta_info)
+    }
+
+    fn trace_call_many(
+        &self,
+        meta: Self::Metadata,
+        tx_traces: Vec<(RPCTransaction, Vec<String>, Option<TraceMeta>)>,
+        block: Option<BlockId>,
+    ) -> EvmResult<Vec<evm_rpc::trace::TraceResultsWithTransactionHash>> {
+        proxy_evm_rpc!(meta.rpc_client, EthTraceCallMany, tx_traces, block)
+    }
+
+    fn trace_replay_transaction(
+        &self,
+        meta: Self::Metadata,
+        tx_hash: Hex<H256>,
+        traces: Vec<String>,
+        meta_info: Option<TraceMeta>,
+    ) -> EvmResult<Option<trace::TraceResultsWithTransactionHash>> {
+        proxy_evm_rpc!(
+            meta.rpc_client,
+            EthTraceReplayTransaction,
+            tx_hash,
+            traces,
+            meta_info
+        )
+    }
+
+    fn trace_replay_block(
+        &self,
+        meta: Self::Metadata,
+        block: BlockId,
+        traces: Vec<String>,
+        meta_info: Option<TraceMeta>,
+    ) -> EvmResult<Vec<trace::TraceResultsWithTransactionHash>> {
+        proxy_evm_rpc!(
+            meta.rpc_client,
+            EthTraceReplayBlock,
+            block,
+            traces,
+            meta_info
+        )
     }
 
     fn estimate_gas(
         &self,
         meta: Self::Metadata,
         tx: RPCTransaction,
-        block: Option<String>,
+        block: Option<BlockId>,
         meta_keys: Option<Vec<String>>,
     ) -> EvmResult<Hex<Gas>> {
         proxy_evm_rpc!(meta.rpc_client, EthEstimateGas, tx, block, meta_keys)
@@ -836,8 +892,8 @@ impl BasicERPC for BasicErpcProxy {
                 while starting <= ending_block {
                     let ending =
                         (starting.saturating_add(MAX_NUM_BLOCKS_IN_BATCH)).min(ending_block);
-                    log_filter.from_block = Some(format!("{:#x}", starting));
-                    log_filter.to_block = Some(format!("{:#x}", ending));
+                    log_filter.from_block = Some(starting.into());
+                    log_filter.to_block = Some(ending.into());
 
                     let cloned_filter = log_filter.clone();
                     let cloned_meta = meta.clone();
