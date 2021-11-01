@@ -183,6 +183,18 @@ impl Blockstore {
             & self
                 .db
                 .delete_range_cf::<cf::BlockHeight>(&mut write_batch, from_slot, to_slot)
+                .is_ok()
+            & self
+                .db
+                .delete_range_cf::<cf::EvmBlockHeader>(&mut write_batch, from_slot, to_slot)
+                .is_ok()
+            & self
+                .db
+                .delete_range_cf::<cf::EvmHeaderIndexByHash>(&mut write_batch, from_slot, to_slot)
+                .is_ok()
+            & self
+                .db
+                .delete_range_cf::<cf::EvmTransactionReceipts>(&mut write_batch, from_slot, to_slot)
                 .is_ok();
         let mut w_active_transaction_status_index =
             self.active_transaction_status_index.write().unwrap();
