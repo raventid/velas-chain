@@ -558,6 +558,15 @@ impl Default for EvmPersistState {
     }
 }
 
+impl EvmPersistState {
+    pub fn last_root(&self) -> H256 {
+        match self {
+            EvmPersistState::Committed(c) => c.block.state_root,
+            EvmPersistState::Incomming(i) => i.state_root,
+        }
+    }
+}
+
 impl EvmState {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, anyhow::Error> {
         let evm_state = path.as_ref();

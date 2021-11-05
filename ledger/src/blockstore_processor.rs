@@ -371,6 +371,7 @@ pub struct ProcessOptions {
     pub account_indexes: AccountSecondaryIndexes,
     pub accounts_db_caching_enabled: bool,
     pub allow_dead_slots: bool,
+    pub purge_evm_snapshot: bool,
 }
 
 pub fn process_blockstore(

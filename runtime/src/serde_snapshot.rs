@@ -1,3 +1,4 @@
+use serde::de::Error as _;
 use {
     crate::{
         accounts::Accounts,
@@ -37,6 +38,8 @@ use {
         time::Instant,
     },
 };
+
+use solana_measure::measure::Measure;
 
 #[cfg(RUSTC_WITH_SPECIALIZATION)]
 use solana_frozen_abi::abi_example::IgnoreAsHelper;
@@ -133,6 +136,8 @@ pub(crate) fn bank_from_stream<R>(
     additional_builtins: Option<&Builtins>,
     account_indexes: AccountSecondaryIndexes,
     caching_enabled: bool,
+    purge_evm_snapshot: bool,
+    evm_state_backup_path: &Path,
 ) -> std::result::Result<Bank, Error>
 where
     R: Read,
@@ -153,6 +158,8 @@ where
                 additional_builtins,
                 account_indexes,
                 caching_enabled,
+                purge_evm_snapshot,
+                evm_state_backup_path,
             )?;
             Ok(bank)
         }};
@@ -243,6 +250,8 @@ fn reconstruct_bank_from_fields<E>(
     additional_builtins: Option<&Builtins>,
     account_indexes: AccountSecondaryIndexes,
     caching_enabled: bool,
+    purge_evm_snapshot: bool,
+    evm_state_backup_path: &Path,
 ) -> Result<Bank, Error>
 where
     E: SerializableStorage,
@@ -258,9 +267,46 @@ where
     accounts_db.freeze_accounts(&bank_fields.ancestors, frozen_account_pubkeys);
 
     let bank_rc = BankRc::new(Accounts::new_empty(accounts_db), bank_fields.slot);
+
+    // EVM State load
+    if evm_state_path.exists() {
+        warn!(
+            "deleting existing evm state folder {}",
+            evm_state_path.display()
+        );
+        std::fs::remove_dir_all(&evm_state_path)?;
+    }
+
+    if purge_evm_snapshot {
+        let mut tmp_evm_state_path_parent = evm_state_path.to_path_buf();
+        tmp_evm_state_path_parent.pop();
+        let tmp_dir = tempfile::TempDir::new_in(tmp_evm_state_path_parent)?;
+        let mut measure = Measure::start("EVM tmp state database restore");
+        evm_state::Storage::restore_from(evm_state_backup_path, &tmp_dir.path()).map_err(|e| {
+            Error::custom(format!("Unable to restore tmp evm backup storage {}", e))
+        })?;
+        measure.stop();
+        info!("{}", measure);
+        let mut measure = Measure::start("EVM snapshot purging");
+        crate::evm_snapshot::copy_and_purge(
+            tmp_dir.path(),
+            evm_state_path,
+            bank_fields.evm_persist_feilds.last_root(),
+        )
+        .map_err(|e| Error::custom(format!("Unable to copy_and_purge storage {}", e)))?;
+        measure.stop();
+        info!("{}", measure);
+    } else {
+        let mut measure = Measure::start("EVM state database restore");
+        evm_state::Storage::restore_from(evm_state_backup_path, &evm_state_path)
+            .map_err(|e| Error::custom(format!("Unable to restore evm backup storage {}", e)))?;
+        measure.stop();
+        info!("{}", measure);
+    }
+
     let evm_state =
         evm_state::EvmState::load_from(evm_state_path, bank_fields.evm_persist_feilds.clone())
-            .expect("Unable to open EVM state storage");
+            .map_err(|e| Error::custom(format!("Unable to open EVM state storage {}", e)))?;
     let bank = Bank::new_from_fields(
         evm_state,
         bank_rc,
