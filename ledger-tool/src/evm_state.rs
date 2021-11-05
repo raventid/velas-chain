@@ -1,6 +1,5 @@
 use std::{
     borrow::Borrow,
-    collections::HashSet,
     marker::PhantomData,
     path::{Path, PathBuf},
 };
@@ -80,7 +79,9 @@ pub fn process_evm_state_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
     let evm_state_path = ledger_path.join("evm-state");
     let storage = Storage::open_persistent(evm_state_path)?;
 
-    match matches.subcommand() {
+    let pool = rayon::ThreadPoolBuilder::new().build()?; // make panic abort, by using default threadpool config
+
+    pool.install(|| match matches.subcommand() {
         ("purge", Some(matches)) => {
             let root = value_t_or_exit!(matches, ROOT_ARG.name, H256);
             let is_dry_run = matches.is_present("dry_run");
@@ -92,14 +93,14 @@ pub fn process_evm_state_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 info!("Dry run, do nothing after collecting keys ...");
             }
 
-            let mut accounts_state_walker =
+            let accounts_state_walker =
                 Walker::new(db, inspectors::memorizer::AccountsKeysCollector::default());
             accounts_state_walker.traverse(root)?;
             accounts_state_walker.inspector.summarize();
 
-            let mut storages_walker =
+            let storages_walker =
                 Walker::new(db, inspectors::memorizer::StoragesKeysCollector::default());
-            for storage_root in &accounts_state_walker.inspector.storage_roots {
+            for storage_root in accounts_state_walker.inspector.storage_roots.iter() {
                 storages_walker.traverse(*storage_root)?;
             }
             storages_walker.inspector.summarize();
@@ -112,6 +113,7 @@ pub fn process_evm_state_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 );
                 cleaner.cleanup()?;
             }
+            Ok(())
         }
         ("copy", Some(matches)) => {
             let root = value_t_or_exit!(matches, ROOT_ARG.name, H256);
@@ -125,17 +127,16 @@ pub fn process_evm_state_command(ledger_path: &Path, matches: &ArgMatches<'_>) -
                 source,
                 destination,
             };
-            let mut walker = Walker::new(storage, streamer);
-            walker.traverse(root)?;
+            let walker = Walker::new(storage, streamer);
+            walker.traverse(root)
         }
         unhandled => panic!("Unhandled {:?}", unhandled),
-    }
-    Ok(())
+    })
 }
 
 trait Inspector<T> {
-    fn inspect_raw<Data: AsRef<[u8]>>(&mut self, _: H256, _: &Data) -> Result<bool>;
-    fn inspect_typed(&mut self, _: &T) -> Result<()>;
+    fn inspect_raw<Data: AsRef<[u8]>>(&self, _: H256, _: &Data) -> Result<bool>;
+    fn inspect_typed(&self, _: &T) -> Result<()>;
 }
 
 struct Walker<DB, T, I> {
@@ -156,11 +157,11 @@ impl<DB, T, I> Walker<DB, T, I> {
 
 impl<DB, T, I> Walker<DB, T, I>
 where
-    DB: Borrow<rocksdb::DB>,
-    T: Decodable,
-    I: Inspector<T>,
+    DB: Borrow<rocksdb::DB> + Sync,
+    T: Decodable + Sync,
+    I: Inspector<T> + Sync,
 {
-    fn traverse(&mut self, hash: H256) -> Result<()> {
+    fn traverse(&self, hash: H256) -> Result<()> {
         debug!("traversing {:?} ...", hash);
         if hash != empty_trie_hash() {
             let db = self.db.borrow();
@@ -176,7 +177,7 @@ where
             let node = MerkleNode::decode(&rlp)?;
             debug!("node: {:?}", node);
 
-            self.process_node(node)?;
+            self.process_node(&node)?;
         } else {
             debug!("skip empty trie");
         }
@@ -184,38 +185,48 @@ where
         Ok(())
     }
 
-    fn process_node(&mut self, node: MerkleNode) -> Result<()> {
+    fn process_node(&self, node: &MerkleNode) -> Result<()> {
         match node {
-            MerkleNode::Leaf(_nibbles, data) => {
-                let rlp = Rlp::new(data);
-                trace!("rlp: {:?}", rlp);
-                let t = T::decode(&rlp)?;
-                // TODO: debug T
-                self.inspector.inspect_typed(&t)?;
-                Ok(())
-            }
-            MerkleNode::Extension(_nibbles, value) => self.process_value(value),
+            MerkleNode::Leaf(_nibbles, data) => self.process_data(data),
+            MerkleNode::Extension(_nibbles, value) => self.process_value(&value),
             MerkleNode::Branch(values, mb_data) => {
-                if let Some(data) = mb_data {
-                    let rlp = Rlp::new(data);
-                    trace!("rlp: {:?}", rlp);
-                    let t = T::decode(&rlp)?;
-                    // TODO: debug T
-                    self.inspector.inspect_typed(&t)?;
+                // lack of copy on result, forces setting array manually
+                let mut values_result = [
+                    None, None, None, None, None, None, None, None, None, None, None, None, None,
+                    None, None, None,
+                ];
+                let result = rayon::scope(|s| {
+                    for (value, result) in values.into_iter().zip(&mut values_result) {
+                        s.spawn(move |_| *result = Some(self.process_value(value)));
+                    }
+                    if let Some(data) = mb_data {
+                        self.process_data(data)
+                    } else {
+                        Ok(())
+                    }
+                });
+                for result in values_result {
+                    result.unwrap()?
                 }
-                for value in values {
-                    self.process_value(value)?;
-                }
-                Ok(())
+                result
             }
         }
     }
 
-    fn process_value(&mut self, value: MerkleValue) -> Result<()> {
+    fn process_data(&self, data: &[u8]) -> Result<()> {
+        let rlp = Rlp::new(data);
+        trace!("rlp: {:?}", rlp);
+        let t = T::decode(&rlp)?;
+        // TODO: debug T
+        self.inspector.inspect_typed(&t)?;
+        Ok(())
+    }
+
+    fn process_value(&self, value: &MerkleValue) -> Result<()> {
         match value {
             MerkleValue::Empty => Ok(()),
-            MerkleValue::Full(node) => self.process_node(*node),
-            MerkleValue::Hash(hash) => self.traverse(hash),
+            MerkleValue::Full(node) => self.process_node(&node),
+            MerkleValue::Hash(hash) => self.traverse(*hash),
         }
     }
 }
@@ -225,24 +236,27 @@ mod inspectors {
 
     pub mod memorizer {
         use super::*;
+        use dashmap::DashSet;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Default)]
         pub struct AccountsKeysCollector {
-            pub trie_keys: HashSet<H256>,
-            pub data_size: usize,
-            pub storage_roots: HashSet<H256>,
-            pub code_hashes: HashSet<H256>,
+            pub trie_keys: DashSet<H256>,
+            pub data_size: AtomicUsize,
+            pub storage_roots: DashSet<H256>,
+            pub code_hashes: DashSet<H256>,
         }
 
         impl Inspector<Account> for AccountsKeysCollector {
-            fn inspect_raw<Data: AsRef<[u8]>>(&mut self, key: H256, data: &Data) -> Result<bool> {
+            fn inspect_raw<Data: AsRef<[u8]>>(&self, key: H256, data: &Data) -> Result<bool> {
                 let is_new_key = self.trie_keys.insert(key);
                 if is_new_key {
-                    self.data_size += data.as_ref().len();
+                    self.data_size
+                        .fetch_add(data.as_ref().len(), Ordering::Relaxed);
                 }
                 Ok(is_new_key)
             }
-            fn inspect_typed(&mut self, account: &Account) -> Result<()> {
+            fn inspect_typed(&self, account: &Account) -> Result<()> {
                 self.storage_roots.insert(account.storage_root);
                 self.code_hashes.insert(account.code_hash);
                 Ok(())
@@ -251,19 +265,20 @@ mod inspectors {
 
         #[derive(Default)]
         pub struct StoragesKeysCollector {
-            pub trie_keys: HashSet<H256>,
-            pub data_size: usize,
+            pub trie_keys: DashSet<H256>,
+            pub data_size: AtomicUsize,
         }
 
         impl Inspector<U256> for StoragesKeysCollector {
-            fn inspect_raw<Data: AsRef<[u8]>>(&mut self, key: H256, data: &Data) -> Result<bool> {
+            fn inspect_raw<Data: AsRef<[u8]>>(&self, key: H256, data: &Data) -> Result<bool> {
                 let is_new_key = self.trie_keys.insert(key);
                 if is_new_key {
-                    self.data_size += data.as_ref().len();
+                    self.data_size
+                        .fetch_add(data.as_ref().len(), Ordering::Relaxed);
                 }
                 Ok(is_new_key)
             }
-            fn inspect_typed(&mut self, _: &U256) -> Result<()> {
+            fn inspect_typed(&self, _: &U256) -> Result<()> {
                 Ok(())
             }
         }
@@ -277,7 +292,7 @@ mod inspectors {
                        unique storage roots: {}, \
                        unique code hashes: {}",
                     self.trie_keys.len(),
-                    self.data_size,
+                    self.data_size.load(Ordering::Relaxed),
                     self.storage_roots.len(),
                     self.code_hashes.len(),
                 );
@@ -291,7 +306,7 @@ mod inspectors {
                        trie keys: {}, \
                        data size: {}",
                     self.trie_keys.len(),
-                    self.data_size,
+                    self.data_size.load(Ordering::Relaxed),
                 );
             }
         }
@@ -299,7 +314,6 @@ mod inspectors {
 
     pub mod streamer {
         use super::*;
-        use rocksdb::WriteBatch;
 
         pub struct AccountsStreamer {
             pub source: Storage,
@@ -307,7 +321,7 @@ mod inspectors {
         }
 
         impl Inspector<Account> for AccountsStreamer {
-            fn inspect_raw<Data: AsRef<[u8]>>(&mut self, key: H256, data: &Data) -> Result<bool> {
+            fn inspect_raw<Data: AsRef<[u8]>>(&self, key: H256, data: &Data) -> Result<bool> {
                 let destination = self.destination.db();
 
                 if let Some(exist_data) = destination.get_pinned(key)? {
@@ -323,14 +337,14 @@ mod inspectors {
                 }
             }
 
-            fn inspect_typed(&mut self, account: &Account) -> Result<()> {
+            fn inspect_typed(&self, account: &Account) -> Result<()> {
                 let source = self.source.borrow();
                 let destination = self.destination.borrow();
 
                 // - Account Storage
-                let mut walker = Walker::new(source, StoragesKeysStreamer::new(destination));
+                let walker = Walker::new(source, StoragesKeysStreamer::new(destination));
                 walker.traverse(account.storage_root)?;
-                walker.inspector.apply()?;
+                // walker.inspector.apply()?;
 
                 // - Account Code
                 let code_hash = account.code_hash;
@@ -345,14 +359,12 @@ mod inspectors {
         }
 
         pub struct StoragesKeysStreamer<Destination> {
-            batch: WriteBatch,
             destination: Destination,
         }
 
         impl<Destination> StoragesKeysStreamer<Destination> {
             fn new(destination: Destination) -> Self {
-                let batch = WriteBatch::default();
-                Self { batch, destination }
+                Self { destination }
             }
         }
 
@@ -360,7 +372,7 @@ mod inspectors {
         where
             Destination: Borrow<rocksdb::DB>,
         {
-            fn inspect_raw<Data: AsRef<[u8]>>(&mut self, key: H256, data: &Data) -> Result<bool> {
+            fn inspect_raw<Data: AsRef<[u8]>>(&self, key: H256, data: &Data) -> Result<bool> {
                 let destination = self.destination.borrow();
 
                 if let Some(exist_data) = destination.get_pinned(key)? {
@@ -369,26 +381,26 @@ mod inspectors {
                     }
                     Ok(false)
                 } else {
-                    self.batch.put(key, data);
+                    destination.put(key, data)?;
                     Ok(true)
                 }
             }
 
-            fn inspect_typed(&mut self, _: &U256) -> Result<()> {
+            fn inspect_typed(&self, _: &U256) -> Result<()> {
                 Ok(())
             }
         }
 
-        impl<Destination> StoragesKeysStreamer<Destination>
-        where
-            Destination: Borrow<rocksdb::DB>,
-        {
-            fn apply(self) -> Result<()> {
-                let destination = self.destination.borrow();
-                destination.write(self.batch)?;
-                Ok(())
-            }
-        }
+        // impl<Destination> StoragesKeysStreamer<Destination>
+        // where
+        //     Destination: Borrow<rocksdb::DB>,
+        // {
+        //     fn apply(self) -> Result<()> {
+        //         let destination = self.destination.borrow();
+        //         destination.write(self.batch)?;
+        //         Ok(())
+        //     }
+        // }
     }
 }
 
