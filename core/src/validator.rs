@@ -134,6 +134,7 @@ pub struct ValidatorConfig {
     pub tpu_coalesce_ms: u64,
     pub validator_exit: Arc<RwLock<ValidatorExit>>,
     pub no_wait_for_vote_to_start_leader: bool,
+    pub purge_evm_snapshot: bool,
 }
 
 impl Default for ValidatorConfig {
@@ -190,6 +191,7 @@ impl Default for ValidatorConfig {
             tpu_coalesce_ms: DEFAULT_TPU_COALESCE_MS,
             validator_exit: Arc::new(RwLock::new(ValidatorExit::default())),
             no_wait_for_vote_to_start_leader: true,
+            purge_evm_snapshot: false,
         }
     }
 }
@@ -1130,6 +1132,7 @@ fn new_banks_from_ledger(
         debug_keys: config.debug_keys.clone(),
         account_indexes: config.account_indexes.clone(),
         accounts_db_caching_enabled: config.accounts_db_caching_enabled,
+        purge_evm_snapshot: config.purge_evm_snapshot,
         ..blockstore_processor::ProcessOptions::default()
     };
 

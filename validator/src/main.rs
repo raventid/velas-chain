@@ -1440,6 +1440,12 @@ pub fn main() {
                       double signing. Turn off to risk double signing a block."),
         )
         .arg(
+            Arg::with_name("purge_evm_snapshot")
+                .hidden(true)
+                .long("purge-evm-snapshot-at-load")
+                .help("Make evm snapshot more compact, but removing possibility to recover archive node from this snapshot."),
+        )
+        .arg(
             Arg::with_name("hard_forks")
                 .long("hard-fork")
                 .value_name("SLOT")
@@ -2187,6 +2193,7 @@ pub fn main() {
         accounts_db_use_index_hash_calculation: matches.is_present("accounts_db_index_hashing"),
         tpu_coalesce_ms,
         no_wait_for_vote_to_start_leader: matches.is_present("no_wait_for_vote_to_start_leader"),
+        purge_evm_snapshot: matches.is_present("purge_evm_snapshot"),
         ..ValidatorConfig::default()
     };
 

@@ -627,6 +627,7 @@ pub fn bank_from_archive<P: AsRef<Path>>(
     additional_builtins: Option<&Builtins>,
     account_indexes: AccountSecondaryIndexes,
     accounts_db_caching_enabled: bool,
+    purge_evm_snapshot: bool,
 ) -> Result<Bank> {
     // Untar the snapshot into a temporary directory
     let unpack_dir = tempfile::Builder::new()
@@ -659,6 +660,7 @@ pub fn bank_from_archive<P: AsRef<Path>>(
         additional_builtins,
         account_indexes,
         accounts_db_caching_enabled,
+        purge_evm_snapshot,
     )?;
 
     if !bank.verify_snapshot_bank() {
@@ -809,6 +811,7 @@ fn rebuild_bank_from_snapshots(
     additional_builtins: Option<&Builtins>,
     account_indexes: AccountSecondaryIndexes,
     accounts_db_caching_enabled: bool,
+    purge_evm_snapshot: bool,
 ) -> Result<Bank> {
     info!("snapshot version: {}", snapshot_version);
 
@@ -826,20 +829,6 @@ fn rebuild_bank_from_snapshots(
     let root_paths = snapshot_paths
         .pop()
         .ok_or_else(|| get_io_error("No snapshots found in snapshots directory"))?;
-
-    // EVM State load
-    if evm_state_path.exists() {
-        warn!(
-            "deleting existing evm state folder {}",
-            evm_state_path.display()
-        );
-        fs::remove_dir_all(&evm_state_path)?;
-    }
-    let mut measure = Measure::start("EVM state database restore");
-    evm_state::Storage::restore_from(root_paths.evm_state_backup_path, &evm_state_path)
-        .expect("Unable to restore EVM state underlying database from storage backup");
-    measure.stop();
-    info!("{}", measure);
 
     info!(
         "Loading bank from {}",
@@ -859,6 +848,8 @@ fn rebuild_bank_from_snapshots(
                 additional_builtins,
                 account_indexes,
                 accounts_db_caching_enabled,
+                purge_evm_snapshot,
+                &root_paths.evm_state_backup_path,
             ),
         }?)
     })?;
