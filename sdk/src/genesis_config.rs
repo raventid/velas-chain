@@ -326,6 +326,7 @@ impl fmt::Display for GenesisConfig {
              Capitalization: {} VLX in {} accounts\n\
              Native instruction processors: {:#?}\n\
              Rewards pool: {:#?}\n\
+             EVM root: {:?}\n\
              EVM chain id: {}\n\
              ",
             Utc.timestamp(self.creation_time, 0).to_rfc3339(),
@@ -359,6 +360,7 @@ impl fmt::Display for GenesisConfig {
             self.accounts.len(),
             self.native_instruction_processors,
             self.rewards_pools,
+            self.evm_root_hash,
             self.evm_chain_id,
         )
     }
