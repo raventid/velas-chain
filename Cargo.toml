@@ -79,6 +79,7 @@ members = [
     "cli",
     "rayon-threadlimit",
     "watchtower",
+    "multi-prefix-kvs",
 ]
 
 exclude = [

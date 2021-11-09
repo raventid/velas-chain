@@ -1,0 +1,15 @@
+[package]
+name = "evm-bigtable-context"
+version = "0.1.0"
+edition = "2018"
+
+
+[dependencies]
+evm-state= {path="../evm-utils/evm-state"}
+solana-storage-bigtable= {path="../storage-bigtable"}
+log="0.4"
+snafu="0.6"
+hex="0.4"
+rlp ="0.5.1"
+tokio = "1.13"
+anyhow = "1"

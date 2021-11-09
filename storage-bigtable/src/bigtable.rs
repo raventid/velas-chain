@@ -72,6 +72,9 @@ pub enum Error {
 
     #[error("Timeout error")]
     TimeoutError,
+
+    #[error("Signature not found")]
+    RlpError(rlp::DecoderError),
 }
 
 impl std::convert::From<std::io::Error> for Error {
@@ -89,6 +92,12 @@ impl std::convert::From<tonic::transport::Error> for Error {
 impl std::convert::From<tonic::Status> for Error {
     fn from(err: tonic::Status) -> Self {
         Self::RpcError(err)
+    }
+}
+
+impl std::convert::From<rlp::DecoderError> for Error {
+    fn from(err: rlp::DecoderError) -> Self {
+        Self::RlpError(err)
     }
 }
 
@@ -550,6 +559,35 @@ impl BigTable {
     {
         let row_data = self.get_single_row_data(table, key.clone()).await?;
         deserialize_protobuf_or_bincode_cell_data(&row_data, table, key)
+    }
+
+    pub async fn get_rlp_cell<T>(&mut self, table: &str, key: RowKey) -> Result<Option<T>>
+    where
+        T: rlp::Decodable,
+    {
+        let row_data = self.get_single_row_data(table, key.clone()).await?;
+        Ok(row_data
+            .into_iter()
+            .find(|(k, _)| k == "rlp")
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(_, v)| rlp::decode(&mut &*v))
+            .transpose()?)
+    }
+
+    pub async fn put_rlp_cells<T>(&mut self, table: &str, cells: &[(RowKey, T)]) -> Result<usize>
+    where
+        T: rlp::Encodable,
+    {
+        let mut bytes_written = 0;
+        let mut new_row_data = vec![];
+        for (row_key, data) in cells {
+            let data = compress_best(&rlp::encode(data).to_vec())?;
+            bytes_written += data.len();
+            new_row_data.push((row_key, vec![("rlp".to_string(), data)]));
+        }
+
+        self.put_row_data(table, "x", &new_row_data).await?;
+        Ok(bytes_written)
     }
 
     pub async fn put_bincode_cells<T>(

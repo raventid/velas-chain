@@ -31,6 +31,7 @@ thiserror = "1.0"
 futures = "0.3.8"
 tonic = { version = "0.4.0", features = ["tls", "transport"] }
 zstd = "0.5.1"
+rlp = "0.5.1"
 
 evm-state = { path = "../evm-utils/evm-state" }
 evm-rpc = { path = "../evm-utils/evm-rpc" }
