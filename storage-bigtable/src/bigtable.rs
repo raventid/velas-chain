@@ -566,12 +566,12 @@ impl BigTable {
         T: rlp::Decodable,
     {
         let row_data = self.get_single_row_data(table, key.clone()).await?;
-        Ok(row_data
+        row_data
             .into_iter()
-            .find(|(k, _)| k == "rlp")
             .filter(|(_, v)| !v.is_empty())
-            .map(|(_, v)| rlp::decode(&mut &*v))
-            .transpose()?)
+            .find(|(k, _)| k == "rlp")
+            .map(|(_, v)| rlp::decode(&decompress(&*v)?).map_err(From::from))
+            .transpose()
     }
 
     pub async fn put_rlp_cells<T>(&mut self, table: &str, cells: &[(RowKey, T)]) -> Result<usize>

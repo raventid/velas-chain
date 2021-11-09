@@ -13,9 +13,9 @@ use crate::types::*;
 /// This information will be propagated to solidity.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TransactionContext {
-    gas_price: u64,
-    origin: H160,
-    coinbase: H160, // Zero inited
+    pub gas_price: u64,
+    pub origin: H160,
+    pub coinbase: H160, // Zero inited
 }
 
 impl TransactionContext {
@@ -100,10 +100,10 @@ impl EvmConfig {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChainContext {
     // From sysvars
-    last_hashes: [H256; 256], // From sysvar EvmBlockHashes
+    pub last_hashes: [H256; 256], // From sysvar EvmBlockHashes
 
     // Mocked with empty value
-    difficulty: U256, // Zero
+    pub difficulty: U256, // Zero
 }
 impl fmt::Debug for ChainContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

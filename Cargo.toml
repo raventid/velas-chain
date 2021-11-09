@@ -44,6 +44,7 @@ members = [
     "evm-utils/programs/evm_loader",
     "evm-utils/evm-state",
     "evm-utils/evm-rpc",
+    "evm-utils/evm-bigtable-context",
     "poh-bench",
     "program-test",
     "programs/secp256k1",
@@ -79,7 +80,6 @@ members = [
     "cli",
     "rayon-threadlimit",
     "watchtower",
-    "multi-prefix-kvs",
 ]
 
 exclude = [

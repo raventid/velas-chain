@@ -139,7 +139,7 @@ impl Code {
 
 impl Encodable for Code {
     fn rlp_append(&self, s: &mut RlpStream) {
-        self.0.rlp_append(s)
+        self.0.rlp_append(s);
     }
 }
 

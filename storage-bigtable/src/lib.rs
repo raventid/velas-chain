@@ -26,7 +26,7 @@ extern crate serde_derive;
 mod access_token;
 #[allow(clippy::enum_variant_names)]
 pub mod bigtable;
-mod compression;
+pub mod compression;
 mod root_ca_certificate;
 
 #[derive(Debug, Error)]

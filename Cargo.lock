@@ -1477,6 +1477,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_logger"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b2cf0344971ee6c64c31be0d530793fba457d322dfec2810c453d0ef228f9c3"
+dependencies = [
+ "atty",
+ "humantime",
+ "log 0.4.14",
+ "regex",
+ "termcolor",
+]
+
+[[package]]
 name = "etcommon-bigint"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1643,6 +1656,21 @@ dependencies = [
  "rlp",
  "serde",
  "sha3 0.8.2",
+]
+
+[[package]]
+name = "evm-bigtable-context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger 0.9.0",
+ "evm-state",
+ "hex",
+ "log 0.4.14",
+ "rlp",
+ "snafu",
+ "solana-storage-bigtable",
+ "tokio 1.13.0",
 ]
 
 [[package]]
@@ -3235,20 +3263,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9f1c5b025cda876f66ef43a113f91ebc9f4ccef34843000e0adf6ebbab84e21"
 dependencies = [
  "winapi 0.3.9",
-]
-
-[[package]]
-name = "multi-prefix-kvs"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "evm-state",
- "hex",
- "log 0.4.14",
- "rlp",
- "snafu",
- "solana-storage-bigtable",
- "tokio 1.13.0",
 ]
 
 [[package]]

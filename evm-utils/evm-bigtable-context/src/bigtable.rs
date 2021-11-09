@@ -1,35 +1,39 @@
+use std::fmt::Debug;
+use std::time::Duration;
 use std::{marker::PhantomData, ops::Sub};
 
 use super::*;
 use solana_storage_bigtable::bigtable::BigTableConnection;
 use solana_storage_bigtable::bigtable::Result;
+use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
 
+#[derive(Clone)]
 pub struct BigTable<K, V> {
     connection: BigTableConnection,
     table: String,
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
     _pk: PhantomData<K>,
     _pv: PhantomData<V>,
 }
 
 impl<K, V> BigTable<K, V> {
-    async fn new(instance_name: &str, table: String) -> Result<Self> {
-        Ok(Self {
-            connection: BigTableConnection::new(instance_name, false, None).await?,
+    fn new(connection: BigTableConnection, table: String, runtime: Arc<Runtime>) -> Self {
+        Self {
+            connection: connection.clone(),
             table,
-            runtime: Runtime::new()?,
+            runtime: runtime,
             _pk: PhantomData,
             _pv: PhantomData,
-        })
+        }
     }
 }
 
-impl<K, V> AsyncMap for BigTable<K, V>
+impl<K, V> AsyncMap for Arc<BigTable<K, V>>
 where
     K: Clone + Ord + FixedSizedKey,
     // K: tupleops::TupleAppend<<K as MultiPrefixKey>::Prefixes, <K as MultiPrefixKey>::Suffix>,
-    V: Clone + rlp::Decodable + rlp::Encodable + Default,
+    V: Clone + rlp::Decodable + rlp::Encodable + Default + Debug,
 {
     type K = K;
     type V = V;
@@ -43,7 +47,12 @@ where
                     .client()
                     .get_rlp_cell(&self.table, key.hex_encoded_reverse())
             })
-            .unwrap_or(None)
+            .or_else(|e| match e {
+                // Empty row = None
+                solana_storage_bigtable::bigtable::Error::RowNotFound => Ok(None),
+                e => Err(e),
+            })
+            .unwrap()
     }
     fn set(&self, key: Self::K, value: Self::V) {
         self.runtime
@@ -59,14 +68,14 @@ where
     }
 }
 
-impl<K, V> AsyncMapSearch for BigTable<K, V>
+impl<K, V> AsyncMapSearch for Arc<BigTable<K, V>>
 where
     K: MultiPrefixKey + Clone,
     Self::K: MultiPrefixKey,
     <Self::K as MultiPrefixKey>::Suffix: RangeValue,
     <K as MultiPrefixKey>::Prefixes: Clone,
     // K: tupleops::TupleAppend<<K as MultiPrefixKey>::Prefixes, <K as MultiPrefixKey>::Suffix>,
-    V: Clone + rlp::Encodable + rlp::Decodable + Default,
+    V: Clone + rlp::Encodable + rlp::Decodable + Default + Debug,
 {
     fn search_rev<F, Reducer>(
         &self,
@@ -78,7 +87,7 @@ where
     where
         F: FnMut(Reducer, (Self::K, Self::V)) -> ControlFlow<Reducer, Reducer>,
     {
-        const LIMIT: i64 = 1000;
+        const LIMIT: i64 = 10;
         // Note in bigtable we store in reverse index, so end suffix is actually starting point.
         //
         // Example key: 0xaabbcc...f1a0fffffffffffffffa
@@ -101,8 +110,15 @@ where
             .flat_map(|(k, v)| v.into_iter().map(move |(c, v)| (k.clone(), (c, v))))
             .filter_map(|(k, (c, v))| {
                 if c == "rlp" {
-                    let key = todo!();
-                    Some((key, rlp::decode(&mut &*v).unwrap()))
+                    let hex_key = hex::decode(&k).unwrap();
+                    let key = Self::K::from_buffer_ord_bytes(&hex_key);
+                    Some((
+                        key,
+                        rlp::decode(
+                            &solana_storage_bigtable::compression::decompress(&*v).unwrap(),
+                        )
+                        .unwrap(),
+                    ))
                 } else {
                     None
                 }
@@ -113,5 +129,59 @@ where
             ControlFlow::Continue(traverse) => traverse,
         }
         //todo: Change limit
+    }
+}
+
+type SharedAnyWithDetails = (Arc<dyn Any + Send + Sync + 'static>, &'static str);
+
+pub struct BigtableProvider {
+    connection: BigTableConnection,
+    runtime: Arc<Runtime>,
+    created_maps: BTreeMap<String, SharedAnyWithDetails>,
+}
+
+impl BigtableProvider {
+    pub fn new(instance_name: &str, read_only: bool) -> Result<Self> {
+        let runtime = Runtime::new()?;
+        let connection = runtime.block_on(BigTableConnection::new(
+            instance_name,
+            read_only,
+            None, //Some(Duration::from_secs(5)),
+        ))?;
+        Ok(Self {
+            runtime: Arc::new(runtime),
+            connection,
+            created_maps: BTreeMap::new(),
+        })
+    }
+
+    pub fn take_map_shared<K: Send + Sync + 'static + Ord, V: Send + Sync + 'static>(
+        &mut self,
+        column: String,
+    ) -> std::result::Result<Arc<BigTable<K, V>>, crate::Error> {
+        let type_name = std::any::type_name::<(K, V)>();
+        match self.created_maps.entry(column.clone()) {
+            Entry::Vacant(v) => {
+                let map = Arc::new(BigTable::new(
+                    self.connection.clone(),
+                    column,
+                    self.runtime.clone(),
+                ));
+                let any_map = map.clone() as Arc<dyn Any + Send + Sync + 'static>;
+                v.insert((any_map, type_name));
+                Ok(map)
+            }
+            Entry::Occupied(o) => {
+                o.get()
+                    .0
+                    .clone()
+                    .downcast()
+                    .map_err(|_| Error::ThisColumnContainDifferMapType {
+                        column,
+                        expected_type: String::from(type_name),
+                        exist_type: String::from(o.get().1),
+                    })
+            }
+        }
     }
 }

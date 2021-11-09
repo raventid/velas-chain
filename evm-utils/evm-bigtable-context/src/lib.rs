@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 pub mod bigtable;
+pub mod context;
 pub mod evm_schema;
 use snafu::{ResultExt, Snafu};
 

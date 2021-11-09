@@ -3,13 +3,16 @@ name = "evm-bigtable-context"
 version = "0.1.0"
 edition = "2018"
 
+[[bin]]
+name="bigtable-test"
 
 [dependencies]
-evm-state= {path="../evm-utils/evm-state"}
-solana-storage-bigtable= {path="../storage-bigtable"}
+evm-state= {path="../evm-state"}
+solana-storage-bigtable= {path="../../storage-bigtable"}
 log="0.4"
 snafu="0.6"
 hex="0.4"
 rlp ="0.5.1"
-tokio = "1.13"
+tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+env_logger = "0.9"

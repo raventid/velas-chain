@@ -1,4 +1,5 @@
 pub use evm::{
+    self,
     backend::{Apply, ApplyBackend, Backend, Log, MemoryAccount, MemoryVicinity},
     executor::StackExecutor,
     CallScheme, Config, Context, CreateScheme, ExitError, ExitFatal, ExitReason, ExitRevert,
@@ -20,7 +21,7 @@ pub use transactions::*;
 pub use types::*;
 
 pub use {
-    context::{ChainContext, EvmConfig},
+    context::{ChainContext, EvmConfig, TransactionContext},
     state::{
         AccountProvider, Committed, EvmBackend, EvmPersistState, EvmState, Incomming,
         DEFAULT_GAS_LIMIT, MAX_IN_MEMORY_EVM_ACCOUNTS,

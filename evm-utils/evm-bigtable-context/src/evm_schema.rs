@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 
 // keys;
+use crate::bigtable::{BigTable, BigtableProvider};
 use evm_state::{BlockNum, H160, H256};
+
+use std::ops::RangeInclusive;
+
 //values
 use super::*;
 use evm_state::types::{Account, Code};
@@ -96,6 +100,7 @@ impl RangeValue for H256 {
 // Third Index: BlockNum
 //
 
+#[derive(Debug, Clone)]
 pub struct EvmSchema<AccountMap, CodeMap, StorageMap> {
     accounts: AccountMap,
     code: CodeMap,
@@ -109,7 +114,7 @@ impl
         MemMap<(H160, H256, BlockNum), H256>,
     >
 {
-    pub fn new_mem(provider: &mut MemMapProvider) -> Result<Self> {
+    pub fn new_mem_tmp(provider: &mut MemMapProvider) -> Result<Self> {
         Ok(Self {
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
@@ -118,6 +123,23 @@ impl
     }
 }
 
+impl
+    EvmSchema<
+        Arc<BigTable<(H160, BlockNum), Account>>,
+        Arc<BigTable<H160, Code>>,
+        Arc<BigTable<(H160, H256, BlockNum), H256>>,
+    >
+{
+    pub fn new_bigtable(provider: &mut BigtableProvider) -> Result<Self> {
+        Ok(Self {
+            accounts: provider.take_map_shared(String::from("evm-accounts"))?,
+            storage: provider.take_map_shared(String::from("evm-account-storage"))?,
+            code: provider.take_map_shared(String::from("evm-account-code"))?,
+        })
+    }
+}
+
+#[doc(hidden)]
 impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
 // declaration
 where
@@ -192,44 +214,43 @@ where
     }
 }
 
+impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
+// declaration
+where
+    // account
+    AccountMap: AsyncMap<K = (H160, BlockNum)>,
+    AccountMap: AsyncMap<V = Account>,
+    AccountMap: AsyncMapSearch,
+    // code
+    CodeMap: AsyncMap<K = H160>,
+    CodeMap: AsyncMap<V = Code>,
+    // storage
+    StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
+    StorageMap: AsyncMap<V = H256>,
+    StorageMap: AsyncMapSearch,
+{
+    // Return None, if results of queries is different;
+    // Return true if all data in rage was found;
+    // Return false if all data in rage not found;
+    pub fn check_account_in_block_range(
+        &self,
+        key: H160,
+        account: &Account,
+        blocks: RangeInclusive<BlockNum>,
+    ) -> Option<bool> {
+        blocks.into_iter().fold(None, |init, b| {
+            let new_account = self.find_last_account(key, b).unwrap_or_default();
+            let new_result = new_account == *account;
+            init.filter(|v| *v == new_result)
+                .or_else(|| Some(new_result))
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use std::ops::RangeInclusive;
 
     use super::*;
-
-    impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
-    // declaration
-    where
-        // account
-        AccountMap: AsyncMap<K = (H160, BlockNum)>,
-        AccountMap: AsyncMap<V = Account>,
-        AccountMap: AsyncMapSearch,
-        // code
-        CodeMap: AsyncMap<K = H160>,
-        CodeMap: AsyncMap<V = Code>,
-        // storage
-        StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
-        StorageMap: AsyncMap<V = H256>,
-        StorageMap: AsyncMapSearch,
-    {
-        // Return None, if results of queries is different;
-        // Return true if all data in rage was found;
-        // Return false if all data in rage not found;
-        fn check_account_in_block_range(
-            &self,
-            key: H160,
-            account: &Account,
-            blocks: RangeInclusive<BlockNum>,
-        ) -> Option<bool> {
-            blocks.into_iter().fold(None, |init, b| {
-                let new_account = self.find_last_account(key, b).unwrap_or_default();
-                let new_result = new_account == *account;
-                init.filter(|v| *v == new_result)
-                    .or_else(|| Some(new_result))
-            })
-        }
-    }
 
     impl_trait_test_for_type! {test_h160_key => H160}
     impl_trait_test_for_type! {test_H256_key => H256}
@@ -245,7 +266,7 @@ mod test {
     #[test]
     fn insert_and_find_account() {
         let mut mem_provider = MemMapProvider::default();
-        let evm_schema = EvmSchema::new_mem(&mut mem_provider).unwrap();
+        let evm_schema = EvmSchema::new_mem_tmp(&mut mem_provider).unwrap();
 
         let account_key = H160::repeat_byte(0x37);
         let account = Account {
@@ -282,11 +303,6 @@ mod test {
             storage_updates,
         );
 
-        assert_eq!(
-            evm_schema.find_code(account_key).unwrap_or_default(),
-            some_code
-        );
-
         assert!(evm_schema
             .check_account_in_block_range(account_key, &account_update, 1..=4)
             .unwrap());
@@ -302,5 +318,10 @@ mod test {
         assert!(!evm_schema
             .check_account_in_block_range(account_key, &account, 1..=4)
             .unwrap());
+
+        assert_eq!(
+            evm_schema.find_code(account_key).unwrap_or_default(),
+            some_code
+        );
     }
 }
