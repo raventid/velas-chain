@@ -256,6 +256,7 @@ mod test {
     impl_trait_test_for_type! {test_H256_key => H256}
     impl_trait_test_for_type! {test_BlockNum_key => BlockNum}
     impl_trait_test_for_type! {test_account_key => (H160,BlockNum)}
+    impl_trait_test_for_type! {test_account_key_hashed => (H256,BlockNum)}
     impl_trait_test_for_type! {test_account_storage_key => (H160,H256, BlockNum)}
 
     fn create_storage_from_u8<I: Iterator<Item = (u8, u8)>>(i: I) -> HashMap<H256, H256> {

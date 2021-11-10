@@ -13,9 +13,9 @@ pub use primitive_types::{H256, U256};
 pub use secp256k1::rand;
 use snafu::ensure;
 
-use crate::types::H160;
+use crate::{context::ExecutorContextProvider, types::H160};
 use crate::{
-    context::{ChainContext, EvmConfig, ExecutorContext, TransactionContext},
+    context::{BackendProvider, ChainContext, EvmConfig, ExecutorContext, TransactionContext},
     state::{AccountProvider, EvmBackend, Incomming},
     transactions::{
         Transaction, TransactionAction, TransactionInReceipt, TransactionReceipt,
@@ -112,8 +112,9 @@ impl Executor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn transaction_execute_raw<F>(
-        &mut self,
+    pub fn transaction_execute_raw<'a, ExecutionContext, F>(
+        &'a mut self,
+        execution_context: ExecutionContext,
         caller: H160,
         nonce: U256,
         gas_price: U256,
@@ -127,6 +128,7 @@ impl Executor {
     ) -> Result<ExecutionResult, Error>
     where
         F: FnMut(H160, &[u8], Option<u64>, &Context) -> Option<PrecompileCallResult>,
+        ExecutionContext: BackendProvider<'a, Incomming> + 'a,
     {
         let state_account = self
             .evm_backend
@@ -178,14 +180,14 @@ impl Executor {
 
         let config = self.config.to_evm_params();
         let transaction_context = TransactionContext::new(gas_price.as_u64(), caller);
-        let execution_context = ExecutorContext::new(
+        let execution_context = execution_context.construct(
             &mut self.evm_backend,
             self.chain_context,
             transaction_context,
             self.config,
         );
 
-        let block_gas_limit_left = execution_context.gas_left();
+        let block_gas_limit_left = ExecutionContext::gas_left(&execution_context);
         let metadata = StackSubstateMetadata::new(block_gas_limit_left, &config);
         let state = MemoryStackState::new(metadata, &execution_context);
         let mut executor = StackExecutor::new_with_precompile(state, &config, &mut precompiles);
@@ -236,7 +238,7 @@ impl Executor {
         let (updates, logs) = executor_state.deconstruct();
 
         let tx_logs: Vec<_> = logs.into_iter().collect();
-        execution_context.apply(updates, used_gas);
+        ExecutionContext::apply(execution_context, updates, used_gas);
 
         Ok(ExecutionResult {
             exit_reason,
@@ -269,6 +271,7 @@ impl Executor {
         };
         let tx_hash = unsigned_tx.tx_id_hash();
         let result = self.transaction_execute_raw(
+            ExecutorContextProvider,
             caller,
             tx.nonce,
             tx.gas_price,
@@ -304,6 +307,7 @@ impl Executor {
 
         let tx_hash = evm_tx.tx_id_hash();
         let result = self.transaction_execute_raw(
+            ExecutorContextProvider,
             caller,
             nonce,
             gas_price,
@@ -344,15 +348,14 @@ impl Executor {
             self.config,
         );
 
-        let gas_limit = execution_context.gas_left();
+        let gas_limit = ExecutorContextProvider::gas_left(&execution_context);
         let metadata = StackSubstateMetadata::new(gas_limit, &config);
         let state = MemoryStackState::new(metadata, &execution_context);
         let mut executor = StackExecutor::new_with_precompile(state, &config, &mut precompiles);
         let result = func(&mut executor);
         let used_gas = executor.used_gas();
         let (updates, _logs) = executor.into_state().deconstruct();
-
-        execution_context.apply(updates, used_gas);
+        ExecutorContextProvider::apply(execution_context, updates, used_gas);
 
         result
     }

@@ -52,6 +52,7 @@ where
                 solana_storage_bigtable::bigtable::Error::RowNotFound => Ok(None),
                 e => Err(e),
             })
+            .map_err(anyhow::Error::from)
             .unwrap()
     }
     fn set(&self, key: Self::K, value: Self::V) {
@@ -61,6 +62,7 @@ where
                     .client()
                     .put_rlp_cells(&self.table, &[(key.hex_encoded_reverse(), value)])
             })
+            .map_err(anyhow::Error::from)
             .unwrap();
     }
     fn remove(&self, key: &Self::K) {
@@ -104,19 +106,23 @@ where
                 Some(end.hex_encoded_reverse()),
                 LIMIT,
             ))
+            .map_err(anyhow::Error::from)
             .unwrap();
         match result
             .into_iter()
             .flat_map(|(k, v)| v.into_iter().map(move |(c, v)| (k.clone(), (c, v))))
             .filter_map(|(k, (c, v))| {
                 if c == "rlp" {
-                    let hex_key = hex::decode(&k).unwrap();
+                    let hex_key = hex::decode(&k).map_err(anyhow::Error::from).unwrap();
                     let key = Self::K::from_buffer_ord_bytes(&hex_key);
                     Some((
                         key,
                         rlp::decode(
-                            &solana_storage_bigtable::compression::decompress(&*v).unwrap(),
+                            &solana_storage_bigtable::compression::decompress(&*v)
+                                .map_err(anyhow::Error::from)
+                                .unwrap(),
                         )
+                        .map_err(anyhow::Error::from)
                         .unwrap(),
                     ))
                 } else {
@@ -183,5 +189,24 @@ impl BigtableProvider {
                     })
             }
         }
+    }
+}
+
+pub fn execute_and_handle_errors<F, T>(func: F) -> std::result::Result<T, anyhow::Error>
+where
+    F: FnMut() -> T + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(func) {
+        Ok(T) => Ok(T),
+        Err(e) => match e.downcast::<anyhow::Error>() {
+            Ok(e) => Err(*e),
+            Err(e) => {
+                if let Ok(e) = e.downcast::<String>() {
+                    anyhow::bail!(*e.clone())
+                } else {
+                    anyhow::bail!("Error in converting bigtable error to anyhow.")
+                }
+            }
+        },
     }
 }

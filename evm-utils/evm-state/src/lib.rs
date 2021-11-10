@@ -21,7 +21,7 @@ pub use transactions::*;
 pub use types::*;
 
 pub use {
-    context::{ChainContext, EvmConfig, TransactionContext},
+    context::{BackendProvider, ChainContext, EvmConfig, TransactionContext},
     state::{
         AccountProvider, Committed, EvmBackend, EvmPersistState, EvmState, Incomming,
         DEFAULT_GAS_LIMIT, MAX_IN_MEMORY_EVM_ACCOUNTS,

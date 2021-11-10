@@ -140,6 +140,95 @@ impl ChainContext {
     }
 }
 
+pub trait BackendProvider<'a, State> {
+    type Output: Backend;
+    fn construct(
+        self,
+        backend: &'a mut EvmBackend<State>,
+        chain_context: ChainContext,
+        tx_context: TransactionContext,
+        config: EvmConfig,
+    ) -> Self::Output
+    where
+        Self::Output: 'a;
+    fn gas_left(this: &Self::Output) -> u64;
+    fn apply<A, I>(this: Self::Output, values: A, used_gas: u64)
+    where
+        A: IntoIterator<Item = Apply<I>>,
+        I: IntoIterator<Item = (H256, H256)>;
+}
+pub struct ExecutorContextProvider;
+impl<'a> BackendProvider<'a, Incomming> for ExecutorContextProvider {
+    type Output = ExecutorContext<'a, Incomming>;
+    fn construct(
+        self,
+        backend: &'a mut EvmBackend<Incomming>,
+        chain_context: ChainContext,
+        tx_context: TransactionContext,
+        config: EvmConfig,
+    ) -> ExecutorContext<'a, Incomming> {
+        ExecutorContext {
+            backend,
+            chain_context,
+            tx_context,
+            config,
+        }
+    }
+
+    fn gas_left(this: &Self::Output) -> u64 {
+        this.config.gas_limit - this.backend.state.used_gas
+    }
+    // TODO: implement logs append for blocks.
+    fn apply<A, I>(this: Self::Output, values: A, used_gas: u64)
+    where
+        A: IntoIterator<Item = Apply<I>>,
+        I: IntoIterator<Item = (H256, H256)>,
+    {
+        for apply in values {
+            match apply {
+                Apply::Modify {
+                    address,
+                    basic,
+                    code,
+                    storage,
+                    reset_storage: _, // TODO implement reset storage
+                } => {
+                    debug!(
+                        "Apply::Modify address = {}, basic = {:?}, code = {:?}",
+                        address, basic, code
+                    );
+
+                    let storage = HashMap::<H256, H256>::from_iter(storage);
+                    debug!("Apply::Modify storage = {:?}", storage);
+
+                    let mut account_state =
+                        this.backend.get_account_state(address).unwrap_or_default();
+
+                    account_state.nonce = basic.nonce;
+                    account_state.balance = basic.balance;
+
+                    if let Some(code) = code {
+                        account_state.code = code.into();
+                    }
+
+                    this.backend.ext_storage(address, storage);
+
+                    if !account_state.is_empty() {
+                        this.backend.set_account_state(address, account_state);
+                    } else {
+                        this.backend.remove_account(address);
+                    }
+                }
+                Apply::Delete { address } => {
+                    this.backend.remove_account(address);
+                }
+            }
+        }
+
+        this.backend.state.used_gas += used_gas;
+    }
+}
+
 #[derive(Debug)]
 pub struct ExecutorContext<'a, State> {
     pub(crate) backend: &'a mut EvmBackend<State>,
@@ -169,60 +258,6 @@ impl<'a> ExecutorContext<'a, Incomming> {
             tx_context: Default::default(),
             config: Default::default(),
         }
-    }
-
-    pub fn gas_left(&self) -> u64 {
-        self.config.gas_limit - self.backend.state.used_gas
-    }
-
-    // TODO: implement logs append for blocks.
-    pub fn apply<A, I>(self, values: A, used_gas: u64)
-    where
-        A: IntoIterator<Item = Apply<I>>,
-        I: IntoIterator<Item = (H256, H256)>,
-    {
-        for apply in values {
-            match apply {
-                Apply::Modify {
-                    address,
-                    basic,
-                    code,
-                    storage,
-                    reset_storage: _,
-                } => {
-                    debug!(
-                        "Apply::Modify address = {}, basic = {:?}, code = {:?}",
-                        address, basic, code
-                    );
-
-                    let storage = HashMap::<H256, H256>::from_iter(storage);
-                    debug!("Apply::Modify storage = {:?}", storage);
-
-                    let mut account_state =
-                        self.backend.get_account_state(address).unwrap_or_default();
-
-                    account_state.nonce = basic.nonce;
-                    account_state.balance = basic.balance;
-
-                    if let Some(code) = code {
-                        account_state.code = code.into();
-                    }
-
-                    self.backend.ext_storage(address, storage);
-
-                    if !account_state.is_empty() {
-                        self.backend.set_account_state(address, account_state);
-                    } else {
-                        self.backend.remove_account(address);
-                    }
-                }
-                Apply::Delete { address } => {
-                    self.backend.remove_account(address);
-                }
-            }
-        }
-
-        self.backend.state.used_gas += used_gas;
     }
 }
 

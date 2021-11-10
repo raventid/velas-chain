@@ -1668,6 +1668,7 @@ dependencies = [
  "hex",
  "log 0.4.14",
  "rlp",
+ "sha3 0.9.1",
  "snafu",
  "solana-storage-bigtable",
  "tokio 1.13.0",
