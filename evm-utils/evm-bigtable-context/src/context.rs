@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::iter::FromIterator;
+
 use super::*;
 
 use evm::backend::{Backend, Basic};
@@ -5,6 +8,13 @@ use evm_schema::EvmSchema;
 use evm_state::{evm, Account, Apply, BlockNum, BlockVersion, Code, EvmBackend, H160, H256, U256};
 use evm_state::{BackendProvider, ChainContext, EvmConfig, TransactionContext};
 
+#[derive(Debug, Clone)]
+pub struct ChangedAccount {
+    pub storage: HashMap<H256, H256>,
+    pub balance: U256,
+    pub nonce: U256,
+    pub code: Option<Code>,
+}
 #[derive(Debug)]
 pub struct ExecutorContext<'a, A, C, S> {
     pub(crate) backend: &'a mut EvmSchema<A, C, S>,
@@ -12,6 +22,8 @@ pub struct ExecutorContext<'a, A, C, S> {
     tx_context: TransactionContext,
     config: EvmConfig,
     block_info: BlockInfo,
+    changes: &'a mut BTreeMap<H160, ChangedAccount>,
+    used_gas: &'a mut u64,
 }
 
 #[derive(Debug, Clone)]
@@ -88,12 +100,22 @@ where
     }
 
     fn exists(&self, address: H160) -> bool {
+        if let Some(ChangedAccount { .. }) = self.changes.get(&address) {
+            return true;
+        }
         self.backend
             .find_last_account(address, self.block_info.num)
             .is_some()
     }
 
     fn basic(&self, address: H160) -> Basic {
+        if let Some(ChangedAccount { balance, nonce, .. }) = self.changes.get(&address) {
+            return Basic {
+                balance: *balance,
+                nonce: *nonce,
+            };
+        }
+
         let Account { balance, nonce, .. } = self
             .backend
             .find_last_account(address, self.block_info.num)
@@ -103,11 +125,21 @@ where
     }
 
     fn code(&self, address: H160) -> Vec<u8> {
+        if let Some(ChangedAccount { code, .. }) = self.changes.get(&address) {
+            if let Some(v) = code {
+                return v.clone().into();
+            }
+        }
         let code = self.backend.find_code(address).unwrap_or_default();
         code.into()
     }
 
     fn storage(&self, address: H160, index: H256) -> H256 {
+        if let Some(ChangedAccount { storage, .. }) = self.changes.get(&address) {
+            if let Some(v) = storage.get(&index) {
+                return *v;
+            }
+        }
         self.backend
             .find_storage(address, index, self.block_info.num)
             .unwrap_or_default()
@@ -120,6 +152,8 @@ where
 
 pub struct EvmBigTableExecutorProvider<'a, A, C, S> {
     pub schema: &'a mut EvmSchema<A, C, S>,
+    pub changes: &'a mut BTreeMap<H160, ChangedAccount>,
+    pub used_gas: &'a mut u64,
     pub block_info: BlockInfo,
 }
 
@@ -149,6 +183,8 @@ where
         ExecutorContext {
             backend: self.schema,
             block_info: self.block_info,
+            changes: self.changes,
+            used_gas: self.used_gas,
             chain_context,
             tx_context,
             config,
@@ -158,55 +194,59 @@ where
     fn gas_left(this: &Self::Output) -> u64 {
         this.config.gas_limit // TODO reduce at apply - this.backend.used_gas()
     }
-    // TODO: implement logs append for blocks.
+    // TODO: implement lapply
     fn apply<Applies, I>(this: Self::Output, values: Applies, used_gas: u64)
     where
         Applies: IntoIterator<Item = Apply<I>>,
         I: IntoIterator<Item = (H256, H256)>,
     {
-        // for apply in values {
-        //     match apply {
-        //         Apply::Modify {
-        //             address,
-        //             basic,
-        //             code,
-        //             storage,
-        //             reset_storage: _,
-        //         } => {
-        //             log::debug!(
-        //                 "Apply::Modify address = {}, basic = {:?}, code = {:?}",
-        //                 address,
-        //                 basic,
-        //                 code
-        //             );
+        for apply in values {
+            match apply {
+                Apply::Modify {
+                    address,
+                    basic,
+                    code,
+                    storage,
+                    reset_storage: _,
+                } => {
+                    log::debug!(
+                        "Apply::Modify address = {}, basic = {:?}, code = {:?}",
+                        address,
+                        basic,
+                        code
+                    );
 
-        //             let storage = HashMap::<H256, H256>::from_iter(storage);
-        //             log::debug!("Apply::Modify storage = {:?}", storage);
+                    let new_storage = HashMap::<H256, H256>::from_iter(storage);
+                    log::debug!("Apply::Modify storage = {:?}", new_storage);
 
-        //             let mut account_state =
-        //                 this.backend.get_account_state(address).unwrap_or_default();
+                    let account_state = this.changes.get(&address).cloned();
+                    let account_change = match account_state {
+                        None => ChangedAccount {
+                            nonce: basic.nonce,
+                            balance: basic.balance,
+                            storage: new_storage,
+                            code: code.map(From::from),
+                        },
+                        Some(ChangedAccount {
+                            nonce,
+                            balance,
+                            storage,
+                            code: old_code,
+                        }) => ChangedAccount {
+                            nonce: basic.nonce,
+                            balance: basic.balance,
+                            storage: storage.into_iter().chain(new_storage).collect(),
+                            code: old_code.or_else(|| code.map(From::from)),
+                        },
+                    };
+                    this.changes.insert(address, account_change);
+                }
+                Apply::Delete { address } => {
+                    // this.changes.insert(address, ChangedAccount::Removed);
+                }
+            }
+        }
 
-        //             account_state.nonce = basic.nonce;
-        //             account_state.balance = basic.balance;
-
-        //             if let Some(code) = code {
-        //                 account_state.code = code.into();
-        //             }
-
-        //             this.backend.ext_storage(address, storage);
-
-        //             if !account_state.is_empty() {
-        //                 this.backend.set_account_state(address, account_state);
-        //             } else {
-        //                 this.backend.remove_account(address);
-        //             }
-        //         }
-        //         Apply::Delete { address } => {
-        //             this.backend.remove_account(address);
-        //         }
-        //     }
-        // }
-
-        // this.backend.state.used_gas += used_gas;
+        *this.used_gas += used_gas;
     }
 }

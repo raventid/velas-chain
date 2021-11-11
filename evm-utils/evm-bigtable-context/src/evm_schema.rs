@@ -202,11 +202,13 @@ where
         key: H160,
         block_num: BlockNum,
         state: Account,
-        code: Code,
+        code: Option<Code>,
         storage_updates: HashMap<H256, H256>,
     ) {
         self.accounts.set((key, block_num), state);
-        self.code.set(key, code);
+        if let Some(code) = code {
+            self.code.set(key, code);
+        }
         for (storage_idx, storage_value) in storage_updates {
             self.storage
                 .set((key, storage_idx, block_num), storage_value);
@@ -285,7 +287,7 @@ mod test {
             account_key,
             block,
             account.clone(),
-            some_code.clone(),
+            some_code.clone().into(),
             storage_updates,
         );
 
@@ -300,7 +302,7 @@ mod test {
             account_key,
             block,
             account_update.clone(),
-            some_code.clone(),
+            None,
             storage_updates,
         );
 

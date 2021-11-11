@@ -197,7 +197,7 @@ where
     F: FnMut() -> T + std::panic::UnwindSafe,
 {
     match std::panic::catch_unwind(func) {
-        Ok(T) => Ok(T),
+        Ok(t) => Ok(t),
         Err(e) => match e.downcast::<anyhow::Error>() {
             Ok(e) => Err(*e),
             Err(e) => {

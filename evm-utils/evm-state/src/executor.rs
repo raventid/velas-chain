@@ -130,11 +130,7 @@ impl Executor {
         F: FnMut(H160, &[u8], Option<u64>, &Context) -> Option<PrecompileCallResult>,
         ExecutionContext: BackendProvider<'a, Incomming> + 'a,
     {
-        let state_account = self
-            .evm_backend
-            .get_account_state(caller)
-            .unwrap_or_default();
-
+        debug!("transaction_execute_raw caller  = {:?}.", caller);
         let chain_id = self.config.chain_id;
 
         ensure!(
@@ -149,6 +145,17 @@ impl Executor {
             self.evm_backend.find_transaction_receipt(tx_hash).is_none(),
             DuplicateTx { tx_hash }
         );
+
+        let config = self.config.to_evm_params();
+        let transaction_context = TransactionContext::new(gas_price.as_u64(), caller);
+        let execution_context = execution_context.construct(
+            &mut self.evm_backend,
+            self.chain_context,
+            transaction_context,
+            self.config,
+        );
+
+        let state_account = execution_context.basic(caller);
 
         ensure!(
             nonce == state_account.nonce,
@@ -178,15 +185,6 @@ impl Executor {
             }
         );
 
-        let config = self.config.to_evm_params();
-        let transaction_context = TransactionContext::new(gas_price.as_u64(), caller);
-        let execution_context = execution_context.construct(
-            &mut self.evm_backend,
-            self.chain_context,
-            transaction_context,
-            self.config,
-        );
-
         let block_gas_limit_left = ExecutionContext::gas_left(&execution_context);
         let metadata = StackSubstateMetadata::new(block_gas_limit_left, &config);
         let state = MemoryStackState::new(metadata, &execution_context);
@@ -194,7 +192,7 @@ impl Executor {
         let (exit_reason, exit_data) = match action {
             TransactionAction::Call(addr) => {
                 debug!(
-                    "TransactionAction::Call caller  = {}, to = {}.",
+                    "TransactionAction::Call caller  = {:?}, to = {:?}.",
                     caller, addr
                 );
                 executor.transact_call(caller, addr, value, input, gas_limit.as_u64())
@@ -202,7 +200,7 @@ impl Executor {
             TransactionAction::Create => {
                 let addr = TransactionAction::Create.address(caller, nonce);
                 debug!(
-                    "TransactionAction::Create caller  = {}, to = {:?}.",
+                    "TransactionAction::Create caller  = {:?}, to = {:?}.",
                     caller, addr
                 );
                 (

@@ -19,10 +19,8 @@ fn main() {
         builder.init();
 
         log::info!("test");
-        let mut bt_provider = BigtableProvider::new("insert_and_find_account_bt", true)
-            .unwrap();
-        let evm_schema = EvmSchema::new_bigtable(&mut bt_provider)
-            .unwrap();
+        let mut bt_provider = BigtableProvider::new("insert_and_find_account_bt", true).unwrap();
+        let evm_schema = EvmSchema::new_bigtable(&mut bt_provider).unwrap();
 
         let account_key = H160::repeat_byte(0x37);
         log::info!("test2q");
@@ -44,7 +42,7 @@ fn main() {
             account_key,
             block,
             account.clone(),
-            some_code.clone(),
+            some_code.clone().into(),
             storage_updates,
         );
 
@@ -59,7 +57,7 @@ fn main() {
             account_key,
             block,
             account_update.clone(),
-            some_code.clone(),
+            None,
             storage_updates,
         );
 
