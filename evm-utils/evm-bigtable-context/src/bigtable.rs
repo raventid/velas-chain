@@ -32,13 +32,11 @@ impl<K, V> BigTable<K, V> {
 impl<K, V> AsyncMap for Arc<BigTable<K, V>>
 where
     K: Clone + Ord + FixedSizedKey,
-    // K: tupleops::TupleAppend<<K as MultiPrefixKey>::Prefixes, <K as MultiPrefixKey>::Suffix>,
     V: Clone + rlp::Decodable + rlp::Encodable + Default + Debug,
 {
     type K = K;
     type V = V;
 
-    // type PrefixIter = Box<dyn Iterator<Item = V>>;
 
     fn get(&self, key: &Self::K) -> Option<Self::V> {
         self.runtime
@@ -76,7 +74,6 @@ where
     Self::K: MultiPrefixKey,
     <Self::K as MultiPrefixKey>::Suffix: RangeValue,
     <K as MultiPrefixKey>::Prefixes: Clone,
-    // K: tupleops::TupleAppend<<K as MultiPrefixKey>::Prefixes, <K as MultiPrefixKey>::Suffix>,
     V: Clone + rlp::Encodable + rlp::Decodable + Default + Debug,
 {
     fn search_rev<F, Reducer>(
@@ -208,5 +205,22 @@ where
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::BTreeSet;
+
+    // This is the way, how rocksdb\bigtable ord their values.
+    #[test]
+    fn lexigoraphical_sort_example() {
+        assert!("abc" < "abd"); // 'd' > 'c'
+        assert!("abc" < "abce"); // length different
+        let data: BTreeSet<_> = ["fff", "ffe", "ffd", "ffefull"].iter().copied().collect();
+        let result: Vec<&str> = data.range("ffe"..="fff").copied().collect();
+
+        // lexicographical order iterator from some ffe to fff should return full version of ffe before ffe.
+        assert_eq!(result, ["ffe", "ffefull", "fff"])
     }
 }

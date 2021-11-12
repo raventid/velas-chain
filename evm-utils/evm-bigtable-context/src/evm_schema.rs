@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 // keys;
-use crate::bigtable::{BigTable, BigtableProvider};
+use crate::{
+    bigtable::{BigTable, BigtableProvider},
+    memory::{SerializedMap, SerializedMapProvider},
+};
 use evm_state::{BlockNum, H160, H256};
 
 use std::ops::RangeInclusive;
@@ -10,6 +13,7 @@ use std::ops::RangeInclusive;
 use super::*;
 use evm_state::types::{Account, Code};
 use log::*;
+use memory::typed::{MemMap, MemMapProvider};
 
 impl FixedSizedKey for H160 {
     const SIZE: usize = 20;
@@ -115,6 +119,22 @@ impl
     >
 {
     pub fn new_mem_tmp(provider: &mut MemMapProvider) -> Result<Self> {
+        Ok(Self {
+            accounts: provider.take_map_shared(String::from("evm-accounts"))?,
+            storage: provider.take_map_shared(String::from("evm-account-storage"))?,
+            code: provider.take_map_shared(String::from("evm-account-code"))?,
+        })
+    }
+}
+
+impl
+    EvmSchema<
+        SerializedMap<(H160, BlockNum), Account>,
+        SerializedMap<H160, Code>,
+        SerializedMap<(H160, H256, BlockNum), H256>,
+    >
+{
+    pub fn new_serialized_tmp(provider: &mut SerializedMapProvider) -> Result<Self> {
         Ok(Self {
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
@@ -252,6 +272,8 @@ where
 #[cfg(test)]
 mod test {
 
+    use crate::memory::SerializedMapProvider;
+
     use super::*;
 
     impl_trait_test_for_type! {test_h160_key => H160}
@@ -270,6 +292,68 @@ mod test {
     fn insert_and_find_account() {
         let mut mem_provider = MemMapProvider::default();
         let evm_schema = EvmSchema::new_mem_tmp(&mut mem_provider).unwrap();
+
+        let account_key = H160::repeat_byte(0x37);
+        let account = Account {
+            nonce: 1.into(),
+            balance: 2.into(),
+            storage_root: H256::repeat_byte(0x2),
+            code_hash: H256::repeat_byte(0x3),
+        };
+        let some_code = Code::new(vec![1, 2, 3, 4]);
+
+        let block = 0;
+
+        let storage_updates = create_storage_from_u8((0..5).into_iter().map(|i| (i, 0xff)));
+        evm_schema.push_account_change(
+            account_key,
+            block,
+            account.clone(),
+            some_code.clone().into(),
+            storage_updates,
+        );
+
+        let block = 1;
+
+        let mut account_update = account.clone();
+        account_update.balance = 1231.into();
+        account_update.nonce = 7.into();
+
+        let storage_updates = create_storage_from_u8((5..7).into_iter().map(|i| (i, 0xee)));
+        evm_schema.push_account_change(
+            account_key,
+            block,
+            account_update.clone(),
+            None,
+            storage_updates,
+        );
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account_update, 1..=4)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_account_in_block_range(account_key, &account_update, 0..=0)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account, 0..=0)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_account_in_block_range(account_key, &account, 1..=4)
+            .unwrap());
+
+        assert_eq!(
+            evm_schema.find_code(account_key).unwrap_or_default(),
+            some_code
+        );
+    }
+
+    #[test]
+    fn insert_and_find_account_serialized() {
+        let mut mem_provider = SerializedMapProvider::default();
+        let evm_schema = EvmSchema::new_serialized_tmp(&mut mem_provider).unwrap();
 
         let account_key = H160::repeat_byte(0x37);
         let account = Account {
