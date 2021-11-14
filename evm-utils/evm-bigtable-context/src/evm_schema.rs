@@ -1,3 +1,4 @@
+use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 
 // keys;
@@ -79,6 +80,11 @@ impl RangeValue for H256 {
     }
 }
 
+pub type HashedAddress = H256;
+pub fn hash_address(address: H160) -> HashedAddress {
+    H256::from_slice(Keccak256::digest(address.as_bytes()).as_slice())
+}
+
 //
 // Versioned account storage
 //
@@ -113,9 +119,9 @@ pub struct EvmSchema<AccountMap, CodeMap, StorageMap> {
 
 impl
     EvmSchema<
-        MemMap<(H160, BlockNum), Account>,
-        MemMap<H160, Code>,
-        MemMap<(H160, H256, BlockNum), H256>,
+        MemMap<(HashedAddress, BlockNum), Account>,
+        MemMap<HashedAddress, Code>,
+        MemMap<(HashedAddress, H256, BlockNum), H256>,
     >
 {
     pub fn new_mem_tmp(provider: &mut MemMapProvider) -> Result<Self> {
@@ -129,9 +135,9 @@ impl
 
 impl
     EvmSchema<
-        SerializedMap<(H160, BlockNum), Account>,
-        SerializedMap<H160, Code>,
-        SerializedMap<(H160, H256, BlockNum), H256>,
+        SerializedMap<(HashedAddress, BlockNum), Account>,
+        SerializedMap<HashedAddress, Code>,
+        SerializedMap<(HashedAddress, H256, BlockNum), H256>,
     >
 {
     pub fn new_serialized_tmp(provider: &mut SerializedMapProvider) -> Result<Self> {
@@ -145,9 +151,9 @@ impl
 
 impl
     EvmSchema<
-        Arc<BigTable<(H160, BlockNum), Account>>,
-        Arc<BigTable<H160, Code>>,
-        Arc<BigTable<(H160, H256, BlockNum), H256>>,
+        Arc<BigTable<(HashedAddress, BlockNum), Account>>,
+        Arc<BigTable<HashedAddress, Code>>,
+        Arc<BigTable<(HashedAddress, H256, BlockNum), H256>>,
     >
 {
     pub fn new_bigtable(provider: &mut BigtableProvider) -> Result<Self> {
@@ -164,18 +170,42 @@ impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
 // declaration
 where
     // account
-    AccountMap: AsyncMap<K = (H160, BlockNum)>,
+    AccountMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = H160>,
+    CodeMap: AsyncMap<K = HashedAddress>,
     CodeMap: AsyncMap<V = Code>,
     // storage
-    StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
+    StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {
     pub fn find_last_account(&self, key: H160, last_block_num: BlockNum) -> Option<Account> {
+        self.find_last_account_hashed(hash_address(key), last_block_num)
+    }
+    pub fn find_code(&self, key: H160) -> Option<Code> {
+        self.find_code_hashed(hash_address(key))
+    }
+    pub fn find_storage(&self, key: H160, index: H256, last_block_num: BlockNum) -> Option<H256> {
+        self.find_storage_hashed(hash_address(key), index, last_block_num)
+    }
+    pub fn push_account_change(
+        &self,
+        key: H160,
+        block_num: BlockNum,
+        state: Account,
+        code: Option<Code>,
+        storage_updates: HashMap<H256, H256>,
+    ) {
+        self.push_account_change_hashed(hash_address(key), block_num, state, code, storage_updates)
+    }
+
+    pub fn find_last_account_hashed(
+        &self,
+        key: HashedAddress,
+        last_block_num: BlockNum,
+    ) -> Option<Account> {
         debug!(
             "Searching for account state = {:?}, since_block = {}",
             key, last_block_num
@@ -194,10 +224,15 @@ where
             },
         )
     }
-    pub fn find_code(&self, key: H160) -> Option<Code> {
+    pub fn find_code_hashed(&self, key: HashedAddress) -> Option<Code> {
         self.code.get(&key)
     }
-    pub fn find_storage(&self, key: H160, index: H256, last_block_num: BlockNum) -> Option<H256> {
+    pub fn find_storage_hashed(
+        &self,
+        key: HashedAddress,
+        index: H256,
+        last_block_num: BlockNum,
+    ) -> Option<H256> {
         debug!(
             "Searching for account storage = ({:?}, {:?}), since_block = {}",
             key, index, last_block_num
@@ -217,9 +252,9 @@ where
             },
         )
     }
-    pub fn push_account_change(
+    pub fn push_account_change_hashed(
         &self,
-        key: H160,
+        key: HashedAddress,
         block_num: BlockNum,
         state: Account,
         code: Option<Code>,
@@ -240,14 +275,14 @@ impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
 // declaration
 where
     // account
-    AccountMap: AsyncMap<K = (H160, BlockNum)>,
+    AccountMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = H160>,
+    CodeMap: AsyncMap<K = HashedAddress>,
     CodeMap: AsyncMap<V = Code>,
     // storage
-    StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
+    StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {

@@ -4,7 +4,7 @@ use std::iter::FromIterator;
 use super::*;
 
 use evm::backend::{Backend, Basic};
-use evm_schema::EvmSchema;
+use evm_schema::{EvmSchema, HashedAddress};
 use evm_state::{evm, Account, Apply, BlockNum, BlockVersion, Code, EvmBackend, H160, H256, U256};
 use evm_state::{BackendProvider, ChainContext, EvmConfig, TransactionContext};
 
@@ -38,14 +38,14 @@ impl<'a, AccountMap, CodeMap, StorageMap> Backend
     for ExecutorContext<'a, AccountMap, CodeMap, StorageMap>
 where
     // account
-    AccountMap: AsyncMap<K = (H160, BlockNum)>,
+    AccountMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = H160>,
+    CodeMap: AsyncMap<K = HashedAddress>,
     CodeMap: AsyncMap<V = Code>,
     // storage
-    StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
+    StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {
@@ -161,14 +161,14 @@ impl<'a, State, AccountMap, CodeMap, StorageMap> BackendProvider<'a, State>
     for EvmBigTableExecutorProvider<'a, AccountMap, CodeMap, StorageMap>
 where
     // account
-    AccountMap: AsyncMap<K = (H160, BlockNum)>,
+    AccountMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = H160>,
+    CodeMap: AsyncMap<K = HashedAddress>,
     CodeMap: AsyncMap<V = Code>,
     // storage
-    StorageMap: AsyncMap<K = (H160, H256, BlockNum)>,
+    StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {

@@ -63,9 +63,9 @@ fn noop_precompile(
 }
 
 type Simulator = EvmSchema<
-    SerializedMap<(H160, BlockNum), Account>,
-    SerializedMap<H160, Code>,
-    SerializedMap<(H160, H256, BlockNum), H256>,
+    SerializedMap<(HashedAddress, BlockNum), Account>,
+    SerializedMap<HashedAddress, Code>,
+    SerializedMap<(HashedAddress, H256, BlockNum), H256>,
 >;
 //TODO Commands:
 // 1. Make full-backup :
