@@ -149,7 +149,7 @@ impl Decodable for Code {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 // TODO: restrict roots modification anywhere outside State Apply logic
 pub struct Account {
     pub nonce: U256,

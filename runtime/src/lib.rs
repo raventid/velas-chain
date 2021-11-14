@@ -17,6 +17,7 @@ pub mod builtins;
 pub mod commitment;
 pub mod contains;
 pub mod epoch_stakes;
+pub mod evm_snapshot;
 pub mod genesis_utils;
 pub mod hardened_unpack;
 pub mod hashed_transaction;
@@ -37,7 +38,6 @@ mod system_instruction_processor;
 pub mod transaction_batch;
 pub mod vote_account;
 pub mod vote_sender_types;
-pub mod evm_snapshot;
 
 #[macro_use]
 extern crate solana_metrics;

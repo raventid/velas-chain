@@ -1663,14 +1663,19 @@ name = "evm-bigtable-context"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dashmap",
  "env_logger 0.9.0",
  "evm-state",
  "hex",
  "log 0.4.14",
+ "paw",
+ "rayon",
  "rlp",
  "sha3 0.9.1",
  "snafu",
+ "solana-runtime",
  "solana-storage-bigtable",
+ "structopt",
  "tokio 1.13.0",
 ]
 

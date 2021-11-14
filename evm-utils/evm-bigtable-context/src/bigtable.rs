@@ -37,7 +37,6 @@ where
     type K = K;
     type V = V;
 
-
     fn get(&self, key: &Self::K) -> Option<Self::V> {
         self.runtime
             .block_on({

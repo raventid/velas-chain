@@ -10,6 +10,7 @@ use evm_state::{
     H256, U256,
 };
 use rlp::{Decodable, Rlp};
+use triedb::merkle::nibble::NibbleVec;
 use triedb::{
     empty_trie_hash,
     merkle::{MerkleNode, MerkleValue},
@@ -26,12 +27,12 @@ pub fn copy_and_purge(src: &Path, destination: &Path, root: H256) -> Result<(), 
         destination,
     };
     let walker = Walker::new(storage, streamer);
-    walker.traverse(root)
+    walker.traverse(Default::default(), root)
 }
 
 pub trait Inspector<T> {
     fn inspect_raw<Data: AsRef<[u8]>>(&self, _: H256, _: &Data) -> Result<bool>;
-    fn inspect_typed(&self, _: &T) -> Result<()>;
+    fn inspect_typed(&self, _: Vec<u8>, _: &T) -> Result<()>;
 }
 
 pub struct Walker<DB, T, I> {
@@ -56,7 +57,7 @@ where
     T: Decodable + Sync,
     I: Inspector<T> + Sync,
 {
-    pub fn traverse(&self, hash: H256) -> Result<()> {
+    pub fn traverse(&self, nimble: NibbleVec, hash: H256) -> Result<()> {
         debug!("traversing {:?} ...", hash);
         if hash != empty_trie_hash() {
             let db = self.db.borrow();
@@ -72,7 +73,7 @@ where
             let node = MerkleNode::decode(&rlp)?;
             debug!("node: {:?}", node);
 
-            self.process_node(&node)?;
+            self.process_node(nimble, &node)?;
         } else {
             debug!("skip empty trie");
         }
@@ -80,10 +81,17 @@ where
         Ok(())
     }
 
-    fn process_node(&self, node: &MerkleNode) -> Result<()> {
+    fn process_node(&self, mut nimble: NibbleVec, node: &MerkleNode) -> Result<()> {
+        trace!("node: {:?}", node);
         match node {
-            MerkleNode::Leaf(_nibbles, data) => self.process_data(data),
-            MerkleNode::Extension(_nibbles, value) => self.process_value(&value),
+            MerkleNode::Leaf(nibbles, data) => {
+                nimble.extend_from_slice(&*nibbles);
+                self.process_data(nimble, data)
+            }
+            MerkleNode::Extension(nibbles, value) => {
+                nimble.extend_from_slice(&*nibbles);
+                self.process_value(nimble, &value)
+            }
             MerkleNode::Branch(values, mb_data) => {
                 // lack of copy on result, forces setting array manually
                 let mut values_result = [
@@ -91,11 +99,15 @@ where
                     None, None, None,
                 ];
                 let result = rayon::scope(|s| {
-                    for (value, result) in values.into_iter().zip(&mut values_result) {
-                        s.spawn(move |_| *result = Some(self.process_value(value)));
+                    for (id, (value, result)) in
+                        values.into_iter().zip(&mut values_result).enumerate()
+                    {
+                        let mut cloned_nimble = nimble.clone();
+                        cloned_nimble.push(id.into());
+                        s.spawn(move |_| *result = Some(self.process_value(cloned_nimble, value)));
                     }
                     if let Some(data) = mb_data {
-                        self.process_data(data)
+                        self.process_data(nimble, data)
                     } else {
                         Ok(())
                     }
@@ -108,20 +120,21 @@ where
         }
     }
 
-    fn process_data(&self, data: &[u8]) -> Result<()> {
+    fn process_data(&self, nimble: NibbleVec, data: &[u8]) -> Result<()> {
         let rlp = Rlp::new(data);
         trace!("rlp: {:?}", rlp);
         let t = T::decode(&rlp)?;
+        let key = triedb::merkle::nibble::into_key(&nimble);
         // TODO: debug T
-        self.inspector.inspect_typed(&t)?;
+        self.inspector.inspect_typed(key, &t)?;
         Ok(())
     }
 
-    fn process_value(&self, value: &MerkleValue) -> Result<()> {
+    fn process_value(&self, nimble: NibbleVec, value: &MerkleValue) -> Result<()> {
         match value {
             MerkleValue::Empty => Ok(()),
-            MerkleValue::Full(node) => self.process_node(&node),
-            MerkleValue::Hash(hash) => self.traverse(*hash),
+            MerkleValue::Full(node) => self.process_node(nimble, &node),
+            MerkleValue::Hash(hash) => self.traverse(nimble, *hash),
         }
     }
 }
@@ -151,7 +164,7 @@ pub mod inspectors {
                 }
                 Ok(is_new_key)
             }
-            fn inspect_typed(&self, account: &Account) -> Result<()> {
+            fn inspect_typed(&self, _: Vec<u8>, account: &Account) -> Result<()> {
                 self.storage_roots.insert(account.storage_root);
                 self.code_hashes.insert(account.code_hash);
                 Ok(())
@@ -173,7 +186,7 @@ pub mod inspectors {
                 }
                 Ok(is_new_key)
             }
-            fn inspect_typed(&self, _: &U256) -> Result<()> {
+            fn inspect_typed(&self, _: Vec<u8>, _: &U256) -> Result<()> {
                 Ok(())
             }
         }
@@ -232,13 +245,13 @@ pub mod inspectors {
                 }
             }
 
-            fn inspect_typed(&self, account: &Account) -> Result<()> {
+            fn inspect_typed(&self, _: Vec<u8>, account: &Account) -> Result<()> {
                 let source = self.source.borrow();
                 let destination = self.destination.borrow();
 
                 // - Account Storage
                 let walker = Walker::new(source, StoragesKeysStreamer::new(destination));
-                walker.traverse(account.storage_root)?;
+                walker.traverse(Default::default(), account.storage_root)?;
                 // walker.inspector.apply()?;
 
                 // - Account Code
@@ -281,7 +294,7 @@ pub mod inspectors {
                 }
             }
 
-            fn inspect_typed(&self, _: &U256) -> Result<()> {
+            fn inspect_typed(&self, _: Vec<u8>, _: &U256) -> Result<()> {
                 Ok(())
             }
         }
