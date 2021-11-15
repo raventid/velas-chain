@@ -193,8 +193,9 @@ where
         self.find_last_account_hashed(hash_address(key), last_block_num)
     }
     pub fn find_code(&self, key: H160) -> Option<Code> {
+        debug!("Searching for account code = {:?}", key);
         let code = self.find_code_hashed(hash_address(key));
-        debug!("Searching for account code = {:?}, code = {:?}", key, code);
+        // debug!("Searching for account code = {:?}, code = {:?}", key, code);
         code
     }
     pub fn find_storage(&self, key: H160, index: H256, last_block_num: BlockNum) -> Option<H256> {
@@ -263,7 +264,7 @@ where
                 debug_assert_eq!(key, addr);
                 debug_assert_eq!(index, index_found);
                 debug!(
-                    "Found account at block = {}, account = {:?}",
+                    "Found account storage at block = {}, account = {:?}",
                     block, account
                 );
                 ControlFlow::Break(Some(account))
@@ -318,6 +319,24 @@ where
             let new_result = new_account == *account;
             init.filter(|v| *v == new_result)
                 .or_else(|| Some(new_result))
+        })
+    }
+
+    pub fn check_storage_in_block_range(
+        &self,
+        key: H160,
+        storage: &HashMap<H256, H256>,
+        blocks: RangeInclusive<BlockNum>,
+    ) -> Option<bool> {
+        blocks.into_iter().fold(None, |mut init, b| {
+            for (idx, data_before) in storage {
+                let data = self.find_storage(key, *idx, b).unwrap_or_default();
+                let new_result = data == *data_before;
+                init = init
+                    .filter(|v| *v == new_result)
+                    .or_else(|| Some(new_result))
+            }
+            init
         })
     }
 }
@@ -425,7 +444,7 @@ mod test {
             block,
             account.clone(),
             some_code.clone().into(),
-            storage_updates,
+            storage_updates.clone(),
         );
 
         let block = 1;
@@ -434,13 +453,13 @@ mod test {
         account_update.balance = 1231.into();
         account_update.nonce = 7.into();
 
-        let storage_updates = create_storage_from_u8((5..7).into_iter().map(|i| (i, 0xee)));
+        let storage_updates2 = create_storage_from_u8((5..7).into_iter().map(|i| (i, 0xee)));
         evm_schema.push_account_change(
             account_key,
             block,
             account_update.clone(),
             None,
-            storage_updates,
+            storage_updates2.clone(),
         );
 
         assert!(evm_schema
@@ -457,6 +476,23 @@ mod test {
 
         assert!(!evm_schema
             .check_account_in_block_range(account_key, &account, 1..=4)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates2, 1..=4)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates2, 0..=0)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates, 0..=0)
+            .unwrap());
+
+        // pervious storage should be saved
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates, 1..=4)
             .unwrap());
 
         assert_eq!(

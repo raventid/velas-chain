@@ -4,9 +4,9 @@ use std::{
 };
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{mapref::one::Ref, DashMap};
 use evm_bigtable_context::context::{BlockInfo, ChangedAccount, EvmBigTableExecutorProvider};
-use evm_bigtable_context::evm_schema::{hash_address, EvmSchema, HashedAddress};
+use evm_bigtable_context::evm_schema::{hash_address, hash_index, EvmSchema, HashedAddress};
 use evm_bigtable_context::memory::{SerializedMap, SerializedMapProvider};
 use evm_state::{
     storage, Account, AccountState, BlockNum, BlockVersion, Code, Storage, TransactionInReceipt,
@@ -168,7 +168,7 @@ pub fn simulate_tx(
             )
             .unwrap();
 
-        debug!("Simulate tx result = {:?}", exit_result);
+        trace!("Simulate tx result = {:?}", exit_result);
     }
     changes_cache
 }
@@ -258,34 +258,59 @@ impl CurrentState {
         // TODO: Simulate precompiles
         if let Some(simulator_changes) = changes_by_tx {
             let mut result = result.expect("Simulator succeed but changes not found"); // TODO: Can be rewrited to use simulated changes.
-            assert_eq!(
-                result.len(),
-                simulator_changes.len(),
-                "Change len different"
-            );
+
+            let simulator = replay_simulator.unwrap();
+
+            // TODO: Native to evm swap.
+            // assert!(
+            //     result.len() <= simulator_changes.len(),
+            //     "Change len different"
+            // );
             for (acc_addr, acc) in simulator_changes {
                 let hashed_addr = hash_address(acc_addr);
-                let state_changed_acc = result.get(&hashed_addr).expect(
-                    "Cannot find account in state changes, but it was changed during simulation",
-                );
-                assert_eq!(
-                    state_changed_acc.new_state.nonce, acc.nonce,
-                    "nonce not equal"
-                );
-                assert_eq!(
-                    state_changed_acc.new_state.balance, acc.balance,
-                    "balance not equal"
-                );
-                assert_eq!(state_changed_acc.code, acc.code, "code not equal");
+                let (new_account, code, storage) = if let Some(new_acc) = result.get(&hashed_addr) {
+                    (
+                        new_acc.new_state,
+                        new_acc.code.clone(),
+                        Some(&new_acc.storage),
+                    )
+                } else {
+                    // Sometimes simulation can report false positive changes (for example when balance was incremented and then decremented)
+                    (
+                        simulator
+                            .find_last_account_hashed(hashed_addr, header.block_number)
+                            .unwrap_or_default(),
+                        simulator.find_code_hashed(hashed_addr),
+                        None,
+                    )
+                };
+                assert_eq!(new_account.nonce, acc.nonce, "nonce not equal");
+                assert_eq!(new_account.balance, acc.balance, "balance not equal");
+                if let Some(_) = acc.code {
+                    //check only code if reported as changed by executor
+                    assert_eq!(code, acc.code, "code not equal");
+                }
 
-                assert_eq!(
-                    state_changed_acc.storage.len(),
-                    acc.storage.len(),
-                    "storage len not equal"
-                );
+                // assert_eq!(
+                //     state_changed_acc.storage.len()
+                //     acc.storage.len(),
+                //     "storage len not equal"
+                // );
                 for (idx, data) in acc.storage {
                     dbg!(idx);
-                    assert_eq!(state_changed_acc.storage[&idx], data, "storage not equal");
+                    let idx = hash_index(idx);
+                    let storage_data =
+                        if let Some(data) = storage.and_then(|s| s.get(&idx).copied()) {
+                            data
+                        } else {
+                            dbg!(hashed_addr);
+                            dbg!(idx);
+                            // Sometimes simulation can report false positive changes for storage too (for example when balance was incremented and then decremented)
+                            simulator
+                                .find_storage_hashed(hashed_addr, idx, header.block_number)
+                                .unwrap_or_default()
+                        };
+                    assert_eq!(storage_data, data, "storage not equal");
                 }
             }
             Some(result)
@@ -352,14 +377,33 @@ impl CurrentState {
                         .traverse(Default::default(), acc.storage_root)
                         .unwrap();
                     ;
-
-                    let exist_data = self.storage.get(&key);
-                    for (idx, data) in storage_state.inspector.storage_data {
-                        let idx_changed = !matches!(exist_data.as_ref().map(|s|s.get(&idx)), Some(Some(s)) if *s.value() == data);
-                        if idx_changed {
-                            account_change.storage.insert(idx, data);
+                    /// Return map that represent differences of two dashmaps,
+                    /// H256::zero() if data was removed.
+                    fn diff_map(ext_data: Option<Ref<H256, DashMap<H256, H256>>>, mut changed_store: DashMap<H256, H256>) -> HashMap<H256, H256> {
+                        use std::str::FromStr;
+                        // iterate over existing storage, to check if some fields was cleared.
+                        let mut ext_data: HashMap<H256, H256> = if let Some(ext_data) = ext_data{
+                            ext_data.value().iter().filter_map(|r|{
+                                let idx = r.key();
+                                let data = r.value();
+                                let (_, new_data) = changed_store.remove(idx)
+                                        .unwrap_or_default(); // if none - then changed_store contain 0x00.00 at this place
+                                if *data != new_data {
+                                    return Some((*idx, new_data))
+                                }
+                                None
+                            }).collect()
+                        } else {
+                            Default::default()
+                        };
+                        // iterate over remaining data and insert it if changed
+                        for (idx, new_data) in changed_store {
+                            let result = ext_data.insert(idx, new_data).is_none();
+                            debug_assert!(result);
                         }
+                        ext_data
                     }
+                    account_change.storage = diff_map(self.storage.get(&key), storage_state.inspector.storage_data);
                 }
                 (key, account_change)
             })
