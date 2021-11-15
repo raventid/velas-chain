@@ -85,6 +85,10 @@ pub fn hash_address(address: H160) -> HashedAddress {
     H256::from_slice(Keccak256::digest(address.as_bytes()).as_slice())
 }
 
+pub fn hash_index(idx: H256) -> HashedAddress {
+    H256::from_slice(Keccak256::digest(idx.as_bytes()).as_slice())
+}
+
 //
 // Versioned account storage
 //
@@ -182,13 +186,23 @@ where
     StorageMap: AsyncMapSearch,
 {
     pub fn find_last_account(&self, key: H160, last_block_num: BlockNum) -> Option<Account> {
+        debug!(
+            "Searching for account state = {:?}, since_block = {}",
+            key, last_block_num
+        );
         self.find_last_account_hashed(hash_address(key), last_block_num)
     }
     pub fn find_code(&self, key: H160) -> Option<Code> {
-        self.find_code_hashed(hash_address(key))
+        let code = self.find_code_hashed(hash_address(key));
+        debug!("Searching for account code = {:?}, code = {:?}", key, code);
+        code
     }
     pub fn find_storage(&self, key: H160, index: H256, last_block_num: BlockNum) -> Option<H256> {
-        self.find_storage_hashed(hash_address(key), index, last_block_num)
+        debug!(
+            "Searching for storage = {:?}, {:?}, since_block = {}",
+            key, index, last_block_num
+        );
+        self.find_storage_hashed(hash_address(key), hash_index(index), last_block_num)
     }
     pub fn push_account_change(
         &self,
@@ -198,7 +212,11 @@ where
         code: Option<Code>,
         storage_updates: HashMap<H256, H256>,
     ) {
-        self.push_account_change_hashed(hash_address(key), block_num, state, code, storage_updates)
+        let mut new_storage = HashMap::new();
+        for (k, v) in storage_updates {
+            new_storage.insert(hash_index(k), v);
+        }
+        self.push_account_change_hashed(hash_address(key), block_num, state, code, new_storage)
     }
 
     pub fn find_last_account_hashed(

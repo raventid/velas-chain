@@ -6,13 +6,13 @@ use std::{
 use anyhow::Result;
 use dashmap::DashMap;
 use evm_bigtable_context::context::{BlockInfo, ChangedAccount, EvmBigTableExecutorProvider};
-use evm_bigtable_context::evm_schema::EvmSchema;
-use evm_bigtable_context::memory::SerializedMap;
+use evm_bigtable_context::evm_schema::{hash_address, EvmSchema, HashedAddress};
+use evm_bigtable_context::memory::{SerializedMap, SerializedMapProvider};
 use evm_state::{
     storage, Account, AccountState, BlockNum, BlockVersion, Code, Storage, TransactionInReceipt,
     TransactionReceipt, H256,
 };
-use evm_state::{Context, EvmBackend, Executor, ExitError, ExitSucceed, H160}; // simulation
+use evm_state::{Context, EvmBackend, EvmConfig, Executor, ExitError, ExitSucceed, H160}; // simulation
 use log::LevelFilter;
 use log::*;
 use rayon::prelude::*;
@@ -85,15 +85,33 @@ pub fn simulate_tx(
     timestamp: u64,
     block_version: BlockVersion,
 ) -> BTreeMap<H160, ChangedAccount> {
+    info!(
+        "Simulating block: block_num = {}, state_root = {:?}",
+        num, root
+    );
     let mut used_gas = 0;
     let mut changes_cache = Default::default();
 
+    if txs.is_empty() {
+        return changes_cache;
+    }
+    let first_tx_chain_id = match &txs[0].transaction {
+        TransactionInReceipt::Unsigned(t) => t.chain_id,
+        TransactionInReceipt::Signed(t) => t
+            .signature
+            .chain_id()
+            .expect("We didn't support Null at chain_id"),
+    };
     let mut executor = Executor::with_config(
         EvmBackend::default(),
         Default::default(),
-        Default::default(),
+        EvmConfig {
+            chain_id: first_tx_chain_id,
+            ..Default::default()
+        },
     );
     for tx in txs {
+        debug!("Simulate tx = {:?}", tx);
         let execution_context = EvmBigTableExecutorProvider {
             schema: &mut *simulator,
             changes: &mut changes_cache,
@@ -149,6 +167,8 @@ pub fn simulate_tx(
                 noop_precompile,
             )
             .unwrap();
+
+        debug!("Simulate tx result = {:?}", exit_result);
     }
     changes_cache
 }
@@ -163,13 +183,12 @@ struct AccountChange {
     storage: HashMap<H256, H256>,
 }
 
-type HashedAddress = H256;
 #[derive(Debug)]
 struct CurrentState {
     accounts: DashMap<HashedAddress, Account>,
     storage: DashMap<HashedAddress, DashMap<H256, H256>>,
     codes: DashMap<H256, Code>,
-    block_num: BlockNum,
+    next_block: BlockNum,
 }
 
 impl CurrentState {
@@ -181,7 +200,7 @@ impl CurrentState {
         );
 
         let mut current_state = Self {
-            block_num,
+            next_block: block_num,
             accounts: DashMap::new(),
             storage: DashMap::new(),
             codes: DashMap::new(),
@@ -196,23 +215,30 @@ impl CurrentState {
         &mut self,
         evm_state: &Storage,
         bigtable_storage: &LedgerStorage,
-        replay_simulator: Option<&mut Simulator>,
+        mut replay_simulator: Option<&mut Simulator>,
     ) -> Option<HashMap<HashedAddress, AccountChange>> {
-        debug!("Requested block = {}", self.block_num);
+        debug!("Requested block = {}", self.next_block);
         let header;
         let changes_by_tx: Option<BTreeMap<H160, ChangedAccount>> =
-            if let Some(simulator) = replay_simulator {
+            if let Some(simulator) = replay_simulator.as_mut() {
                 let block = bigtable_storage
-                .get_evm_confirmed_full_block(self.block_num)
+                .get_evm_confirmed_full_block(self.next_block)
                 .await
                 .expect(
                     "No root hash found, expecting block before starting to be found in bigtable",
                 );
                 header = block.header;
-                todo!()
+                Some(simulate_tx(
+                    *simulator,
+                    block.transactions.into_iter().map(|(_, v)| v).collect(),
+                    header.block_number,
+                    header.state_root,
+                    header.timestamp,
+                    header.version,
+                ))
             } else {
                 header = bigtable_storage
-                .get_evm_confirmed_block_header(self.block_num)
+                .get_evm_confirmed_block_header(self.next_block)
                 .await
                 .expect(
                     "No root hash found, expecting block before starting to be found in bigtable",
@@ -226,17 +252,46 @@ impl CurrentState {
         );
         let result = self.next_block_inner(evm_state, header.state_root);
         if let Some(changes) = &result {
-            for (k, acc) in changes {
-                debug!("{:?} => {:?}", k, acc.new_state);
+            self.next_block += 1;
+        }
+
+        // TODO: Simulate precompiles
+        if let Some(simulator_changes) = changes_by_tx {
+            let mut result = result.expect("Simulator succeed but changes not found"); // TODO: Can be rewrited to use simulated changes.
+            assert_eq!(
+                result.len(),
+                simulator_changes.len(),
+                "Change len different"
+            );
+            for (acc_addr, acc) in simulator_changes {
+                let hashed_addr = hash_address(acc_addr);
+                let state_changed_acc = result.get(&hashed_addr).expect(
+                    "Cannot find account in state changes, but it was changed during simulation",
+                );
+                assert_eq!(
+                    state_changed_acc.new_state.nonce, acc.nonce,
+                    "nonce not equal"
+                );
+                assert_eq!(
+                    state_changed_acc.new_state.balance, acc.balance,
+                    "balance not equal"
+                );
+                assert_eq!(state_changed_acc.code, acc.code, "code not equal");
+
+                assert_eq!(
+                    state_changed_acc.storage.len(),
+                    acc.storage.len(),
+                    "storage len not equal"
+                );
+                for (idx, data) in acc.storage {
+                    dbg!(idx);
+                    assert_eq!(state_changed_acc.storage[&idx], data, "storage not equal");
+                }
             }
-            self.block_num += 1;
+            Some(result)
+        } else {
+            result
         }
-
-        if let Some(simulator) = replay_simulator {
-            todo!()
-        }
-
-        result
     }
 
     // Proceed next block, find differences, apply changes to state, and return changed fields.
@@ -265,7 +320,6 @@ impl CurrentState {
                     if found_account.value() == r.value() {
                         return false;
                     }
-                    debug!("Found changed account: key={:?}, before={:?}, after={:?}", key, found_account.value(), r.value());
                 }
                 true
             })
@@ -301,7 +355,7 @@ impl CurrentState {
 
                     let exist_data = self.storage.get(&key);
                     for (idx, data) in storage_state.inspector.storage_data {
-                        let idx_changed = matches!(exist_data.as_ref().map(|s|s.get(&idx)), Some(Some(s)) if *s.value() == data);
+                        let idx_changed = !matches!(exist_data.as_ref().map(|s|s.get(&idx)), Some(Some(s)) if *s.value() == data);
                         if idx_changed {
                             account_change.storage.insert(idx, data);
                         }
@@ -314,8 +368,9 @@ impl CurrentState {
         for (key, change) in &changed_accounts {
             debug!(
                 "Apply change account: key={:?}, after={:?}",
-                key, change.new_state
+                key, change.new_state,
             );
+            trace!("{:?}=>{:?}", key, change.storage);
             self.accounts.insert(*key, change.new_state);
             let mut entry = self.storage.entry(*key).or_insert(DashMap::new());
             for (idx, data) in &change.storage {
@@ -375,30 +430,55 @@ async fn main(args: Args) {
                 info!("Dry run, do nothing after collecting keys ...");
             }
 
-            let mut state = CurrentState::new(block_num, root, &storage, dry_run);
-
-            //         let mut simulator = if replay_txs {
-            //             let mut simulator = Simulator::new_serialized_tmp().unwrap();
-            //             simulator.push_account_change()
-            // //             push_account_change(
-            // //     &self,
-            // //     key: H160,
-            // //     block_num: BlockNum,
-            // //     state: Account,
-            // //     code: Option<Code>,
-            // //     storage_updates: HashMap<H256, H256>,
-            // // )
-            //         }
-            //         else {
-            //             None
-            //         };
+            let mut state = CurrentState::new(start_block, root, &storage, dry_run);
+            let init_block_num = 0;
+            let mut simulator = if replay_txs {
+                let mut mem_provider = SerializedMapProvider::default();
+                let simulator = Simulator::new_serialized_tmp(&mut mem_provider).unwrap();
+                for ref_kv in &state.accounts {
+                    let key = ref_kv.key();
+                    let account = ref_kv.value();
+                    let code = state.codes.get(key).map(|v| v.value().clone());
+                    let storage_updates = state
+                        .storage
+                        .get(key)
+                        .map(|v| v.value().iter().map(|v| (*v.key(), *v.value())).collect())
+                        .unwrap_or_default();
+                    simulator.push_account_change_hashed(
+                        *key,
+                        init_block_num,
+                        account.clone(),
+                        code,
+                        storage_updates,
+                    );
+                }
+                Some(simulator)
+            } else {
+                None
+            };
             for block in start_block..=end_block {
-                if let Some(_) = state.next_block(&storage, &ledger_storage, None).await {
+                assert_eq!(state.next_block, block);
+                if let Some(changes) = state
+                    .next_block(&storage, &ledger_storage, simulator.as_mut())
+                    .await
+                {
+                    debug!("Debug push account changes to simulator at block {}", block);
+                    for (key, account) in changes {
+                        if let Some(simulator) = &mut simulator {
+                            simulator.push_account_change_hashed(
+                                key,
+                                block,
+                                account.new_state,
+                                account.code,
+                                account.storage,
+                            );
+                        }
+                    }
                 } else {
                     error!("Block {} not found in state, stopping.", block);
                     std::process::exit(1);
                 }
-                assert_eq!(state.block_num, block);
+                assert_eq!(state.next_block, block + 1);
             }
         }
         Args::FullBackup {
