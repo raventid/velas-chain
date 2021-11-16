@@ -5,7 +5,7 @@
 
 set -e
 
-instance=insert_and_find_account_bt
+instance=solana-ledger
 
 cbt=(
     cbt

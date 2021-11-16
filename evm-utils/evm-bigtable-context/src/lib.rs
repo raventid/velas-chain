@@ -204,6 +204,7 @@ where
             prefix,
             <Self::K as MultiPrefixKey>::Suffix::max(),
             None,
+            false,
             init,
             |init, arg| ControlFlow::Continue(func(init, arg)),
         )
@@ -220,6 +221,7 @@ where
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
         last_suffix: <Self::K as MultiPrefixKey>::Suffix,
         first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
+        only_full: bool,
         init: Reducer,
         func: F,
     ) -> Reducer

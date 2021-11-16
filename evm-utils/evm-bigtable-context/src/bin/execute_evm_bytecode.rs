@@ -58,7 +58,7 @@ fn main() {
         Keccak256::digest(rlp.out().as_ref()).as_slice(),
     ));
 
-    let mut bt_provider = BigtableProvider::new("insert_and_find_account_bt", true).unwrap();
+    let mut bt_provider = BigtableProvider::new("insert_and_find_account_bt_evm", true).unwrap();
     let mut evm_schema = EvmSchema::new_bigtable(&mut bt_provider).unwrap();
 
     // cleanup code and account state of contract 0 block
@@ -85,7 +85,7 @@ fn main() {
         used_gas: &mut used_gas,
         block_info: BlockInfo {
             root: empty_trie_hash(),
-            num: 0,
+            num: 100,
             block_version: evm_state::BlockVersion::VersionConsistentHashes,
             timestamp: 0,
         },
@@ -222,7 +222,7 @@ fn main() {
         used_gas: &mut used_gas,
         block_info: BlockInfo {
             root: empty_trie_hash(),
-            num: 0,
+            num: block_num,
             block_version: evm_state::BlockVersion::VersionConsistentHashes,
             timestamp: 0,
         },

@@ -103,6 +103,7 @@ where
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
         last_suffix: <Self::K as MultiPrefixKey>::Suffix,
         first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
+        only_full: bool,
         init: Reducer,
         func: F,
     ) -> Reducer
@@ -164,6 +165,7 @@ where
                     None
                 }
             })
+            .filter(|(_, f, _)| !only_full || *f) // TODO: replace by filter in bigtable.
             .try_fold(init, func)
         {
             ControlFlow::Break(breaked) => breaked,

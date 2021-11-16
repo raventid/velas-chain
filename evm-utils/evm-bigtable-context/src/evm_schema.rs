@@ -190,12 +190,32 @@ where
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {
-    fn last_snapshot_since(&self, key: H256, last_block_num: BlockNum) -> Option<BlockNum> {
-        self.full_backups
-            .range(..last_block_num)
-            .rev()
-            .next()
-            .copied()
+    fn last_snapshot_for_hashed_key_since(
+        &self,
+        hashed_key: H256,
+        last_block_num: BlockNum,
+    ) -> Option<BlockNum> {
+        // self.full_backups
+        //     .range(..last_block_num)
+        //     .rev()
+        //     .next()
+        //     .copied()
+        self.accounts.search_rev(
+            (hashed_key,),
+            last_block_num,
+            None,
+            true,
+            None,
+            |_, ((addr, block), is_full, account)| {
+                debug_assert_eq!(hashed_key, addr);
+                assert!(is_full);
+                debug!(
+                    "Found full snapshot for account at block = {}, account = {:?}",
+                    block, account
+                );
+                ControlFlow::Break(Some(block))
+            },
+        )
     }
     pub fn find_last_account(&self, key: H160, last_block_num: BlockNum) -> Option<Account> {
         debug!(
@@ -244,7 +264,8 @@ where
         self.accounts.search_rev(
             (key,),
             last_block_num,
-            dbg!(self.last_snapshot_since(key, last_block_num)),
+            self.last_snapshot_for_hashed_key_since(key, last_block_num),
+            false,
             None,
             |_, ((addr, block), _is_full, account)| {
                 debug_assert_eq!(key, addr);
@@ -260,7 +281,8 @@ where
         self.code.search_rev(
             (key,),
             last_block_num,
-            self.last_snapshot_since(key, last_block_num),
+            self.last_snapshot_for_hashed_key_since(key, last_block_num),
+            false,
             None,
             |_, ((addr, block), _is_full, code)| {
                 debug_assert_eq!(key, addr);
@@ -282,7 +304,8 @@ where
         self.storage.search_rev(
             (key, index),
             last_block_num,
-            dbg!(self.last_snapshot_since(key, last_block_num)),
+            self.last_snapshot_for_hashed_key_since(key, last_block_num),
+            false,
             None,
             |_, ((addr, index_found, block), _is_full, account)| {
                 debug_assert_eq!(key, addr);
@@ -379,8 +402,8 @@ where
     ) -> Option<bool> {
         blocks.into_iter().fold(None, |mut init, b| {
             for (idx, data_before) in storage {
-                let data = self.find_storage(key, *idx, dbg!(b)).unwrap_or_default();
-                let new_result = dbg!(data) == dbg!(*data_before);
+                let data = self.find_storage(key, *idx, b).unwrap_or_default();
+                let new_result = data == *data_before;
                 init = init
                     .filter(|v| *v == new_result)
                     .or_else(|| Some(new_result));

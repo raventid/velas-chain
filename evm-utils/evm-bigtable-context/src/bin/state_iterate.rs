@@ -490,7 +490,7 @@ async fn main(args: Args) {
             let init_block_num = 0;
             let mut simulator = if replay_txs {
                 let mut mem_provider = SerializedMapProvider::default();
-                let simulator = Simulator::new_serialized_tmp(&mut mem_provider).unwrap();
+                let mut simulator = Simulator::new_serialized_tmp(&mut mem_provider).unwrap();
                 for ref_kv in &state.accounts {
                     let key = ref_kv.key();
                     let account = ref_kv.value();
@@ -500,7 +500,7 @@ async fn main(args: Args) {
                         .get(key)
                         .map(|v| v.value().iter().map(|v| (*v.key(), *v.value())).collect())
                         .unwrap_or_default();
-                    simulator.push_account_change_hashed(
+                    simulator.push_account_change_hashed_full(
                         *key,
                         init_block_num,
                         account.clone(),

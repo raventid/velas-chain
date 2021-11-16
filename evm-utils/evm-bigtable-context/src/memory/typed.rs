@@ -49,6 +49,7 @@ where
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
         end_suffix: <Self::K as MultiPrefixKey>::Suffix,
         first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
+        only_full: bool,
         init: Reducer,
         func: F,
     ) -> Reducer
@@ -66,6 +67,7 @@ where
             .range(start..=end)
             .rev()
             .map(|(k, v)| (k.clone(), false, v.clone()))
+            .filter(|(_, f, _)| !only_full || *f)
             .try_fold(init, func)
         {
             ControlFlow::Break(breaked) => breaked,
