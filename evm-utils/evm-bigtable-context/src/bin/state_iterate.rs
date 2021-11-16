@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use dashmap::{mapref::one::Ref, DashMap};
 use evm_bigtable_context::bigtable::{BigTable, BigtableProvider, DEFAULT_INSTANCE_NAME};
 use evm_bigtable_context::context::{BlockInfo, ChangedAccount, EvmBigTableExecutorProvider};
@@ -96,7 +96,7 @@ pub fn simulate_tx(
     root: H256,
     timestamp: u64,
     block_version: BlockVersion,
-) -> BTreeMap<H160, ChangedAccount> {
+) -> Result<BTreeMap<H160, ChangedAccount>, anyhow::Error> {
     info!(
         "Simulating block: block_num = {}, state_root = {:?}",
         num, root
@@ -105,7 +105,7 @@ pub fn simulate_tx(
     let mut changes_cache = Default::default();
 
     if txs.is_empty() {
-        return changes_cache;
+        return Ok(changes_cache);
     }
     let first_tx_chain_id = match &txs[0].transaction {
         TransactionInReceipt::Unsigned(t) => t.chain_id,
@@ -164,25 +164,23 @@ pub fn simulate_tx(
                         .expect("We didn't support Null at chain_id"),
                 ),
             };
-        let exit_result = executor
-            .transaction_execute_raw(
-                execution_context,
-                caller,
-                nonce,
-                gas_price,
-                gas_limit,
-                action,
-                data,
-                value,
-                chain_id.into(),
-                tx_hash,
-                noop_precompile,
-            )
-            .unwrap();
+        let exit_result = executor.transaction_execute_raw(
+            execution_context,
+            caller,
+            nonce,
+            gas_price,
+            gas_limit,
+            action,
+            data,
+            value,
+            chain_id.into(),
+            tx_hash,
+            noop_precompile,
+        )?;
 
         trace!("Simulate tx result = {:?}", exit_result);
     }
-    changes_cache
+    Ok(changes_cache)
 }
 
 /// account hashed address
@@ -228,10 +226,13 @@ impl CurrentState {
         evm_state: &Storage,
         bigtable_storage: &LedgerStorage,
         mut replay_simulator: Option<&mut Simulator>,
-    ) -> Option<HashMap<HashedAddress, AccountChange>> {
+    ) -> Option<(
+        HashMap<HashedAddress, AccountChange>,
+        Result<(), anyhow::Error>,
+    )> {
         debug!("Requested block = {}", self.next_block);
         let header;
-        let changes_by_tx: Option<BTreeMap<H160, ChangedAccount>> =
+        let changes_by_tx: Option<Result<BTreeMap<H160, ChangedAccount>, _>> =
             if let Some(simulator) = replay_simulator.as_mut() {
                 let block = bigtable_storage
                 .get_evm_confirmed_full_block(self.next_block)
@@ -273,61 +274,72 @@ impl CurrentState {
 
             let simulator = replay_simulator.unwrap();
 
-            // TODO: Native to evm swap.
+            // TODO: changes are introduced by transaction execution, but
+            // currently our simulator can't process system transaction like "Native to evm swap" correctly.
             // assert!(
             //     result.len() <= simulator_changes.len(),
             //     "Change len different"
             // );
-            for (acc_addr, acc) in simulator_changes {
-                let hashed_addr = hash_address(acc_addr);
-                let (new_account, code, storage) = if let Some(new_acc) = result.get(&hashed_addr) {
-                    (
-                        new_acc.new_state,
-                        new_acc.code.clone(),
-                        Some(&new_acc.storage),
-                    )
-                } else {
-                    // Sometimes simulation can report false positive changes (for example when balance was incremented and then decremented)
-                    (
-                        simulator
-                            .find_last_account_hashed(hashed_addr, header.block_number)
-                            .unwrap_or_default(),
-                        simulator.find_code_hashed(hashed_addr, header.block_number),
-                        None,
-                    )
-                };
-                assert_eq!(new_account.nonce, acc.nonce, "nonce not equal");
-                assert_eq!(new_account.balance, acc.balance, "balance not equal");
-                if let Some(_) = acc.code {
-                    //check only code if reported as changed by executor
-                    assert_eq!(code, acc.code, "code not equal");
-                }
-
-                // assert_eq!(
-                //     state_changed_acc.storage.len()
-                //     acc.storage.len(),
-                //     "storage len not equal"
-                // );
-                for (idx, data) in acc.storage {
-                    dbg!(idx);
-                    let idx = hash_index(idx);
-                    let storage_data =
-                        if let Some(data) = storage.and_then(|s| s.get(&idx).copied()) {
-                            data
+            let simulation_result = || {
+                for (acc_addr, simulator_acc) in simulator_changes? {
+                    let hashed_addr = hash_address(acc_addr);
+                    let (new_account, code, storage) =
+                        if let Some(new_acc) = result.get(&hashed_addr) {
+                            (
+                                new_acc.new_state,
+                                new_acc.code.clone(),
+                                Some(&new_acc.storage),
+                            )
                         } else {
-                            dbg!(hashed_addr);
-                            dbg!(idx);
-                            // Sometimes simulation can report false positive changes for storage too (for example when balance was incremented and then decremented)
-                            simulator
-                                .find_storage_hashed(hashed_addr, idx, header.block_number)
-                                .unwrap_or_default()
+                            // Sometimes simulation can report false positive changes (for example when balance was incremented and then decremented)
+                            (
+                                // search in current state, and return default if nothing found.
+                                self.accounts
+                                    .get(&hashed_addr)
+                                    .map(|v| *v.value())
+                                    .unwrap_or_default(),
+                                None, // if code didn't changed didn't try to search it
+                                None, // get storage later, because hashmap and dashmap have no traits in common
+                            )
                         };
-                    assert_eq!(storage_data, data, "storage not equal");
+                    ensure!(new_account.nonce == simulator_acc.nonce, "nonce not equal");
+                    ensure!(
+                        new_account.balance == simulator_acc.balance,
+                        "balance not equal"
+                    );
+                    if let Some(_) = simulator_acc.code {
+                        //check only code if reported as changed by executor
+                        ensure!(code == simulator_acc.code, "code not equal");
+                    }
+
+                    // assert_eq!(
+                    //     state_changed_acc.storage.len()
+                    //     acc.storage.len(),
+                    //     "storage len not equal"
+                    // );
+                    for (idx, data) in simulator_acc.storage {
+                        dbg!(idx);
+                        let idx = hash_index(idx);
+                        let storage_data =
+                            if let Some(data) = storage.and_then(|s| s.get(&idx).copied()) {
+                                data
+                            } else {
+                                // Sometimes simulation can report false positive changes for storage too
+                                // (for example when balance was incremented and then decremented)
+                                self.storage
+                                    .get(&hashed_addr)
+                                    .and_then(|s| s.get(&idx).map(|v| *v.value()))
+                                    .unwrap_or_default()
+                            };
+                        ensure!(storage_data == data, "storage not equal");
+                    }
                 }
-            }
-            Some(result)
+                Ok(())
+            };
+            let simulation_result = simulation_result();
+            Some((result, simulation_result))
         } else {
-            result
+            result.map(|v| (v, Ok(())))
         }
     }
 
@@ -494,25 +506,35 @@ async fn main(args: Args) {
             };
             for block in start_block..=end_block {
                 assert_eq!(state.next_block, block);
-                if let Some(changes) = state
+                match state
                     .next_block(&storage, &ledger_storage, simulator.as_mut())
                     .await
                 {
-                    debug!("Debug push account changes at block {}", block);
-                    for (key, account) in changes {
-                        if let Some(simulator) = &mut simulator {
-                            simulator.push_account_change_hashed(
-                                key,
-                                block,
-                                account.new_state,
-                                account.code,
-                                account.storage,
-                            );
+                    Some((changes, e)) => {
+                        debug!("Debug push account changes at block {}", block);
+                        for (key, account) in changes {
+                            if let Some(simulator) = &mut simulator {
+                                simulator.push_account_change_hashed(
+                                    key,
+                                    block,
+                                    account.new_state,
+                                    account.code,
+                                    account.storage,
+                                );
+                            }
+                        }
+                        if let Err(e) = e {
+                            if dry_run {
+                                error!("Error during block processing {}", e)
+                            } else {
+                                panic!("Error during block processing {}", e)
+                            }
                         }
                     }
-                } else {
-                    error!("Block {} not found in state, stopping.", block);
-                    std::process::exit(1);
+                    None => {
+                        error!("Block {} not found in state, stopping.", block);
+                        std::process::exit(1);
+                    }
                 }
                 assert_eq!(state.next_block, block + 1);
             }
