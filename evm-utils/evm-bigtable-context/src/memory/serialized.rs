@@ -2,7 +2,9 @@
 //! Data is serialized using rlp
 //! String is hex encoded with reverse order. (like in bigtable implementation).
 
-use std::{fmt::Debug, marker::PhantomData};
+use std::{collections::BTreeSet, fmt::Debug, marker::PhantomData};
+
+use evm_state::BlockNum;
 
 use crate::*;
 #[derive(Debug)]
@@ -65,6 +67,21 @@ where
     }
 }
 
+impl<K, V> WriteFull for SerializedMap<K, V>
+where
+    K: Clone + FixedSizedKey,
+    V: Clone + rlp::Decodable + rlp::Encodable + Default + Debug,
+{
+    // TODO: Split serialization and set write interface.
+    fn set_full(&self, key: Self::K, value: Self::V) {
+        let value = rlp::encode(&value).to_vec();
+        let mut key = key.hex_encoded_reverse();
+        key.push_str(crate::FULL_POSTFIX);
+        let mut b = self.lock().unwrap();
+        BTreeMap::insert(&mut b.map, key, value);
+    }
+}
+
 impl<K, V> AsyncMapSearch for SerializedMap<K, V>
 where
     K: MultiPrefixKey + Clone,
@@ -76,26 +93,45 @@ where
     fn search_rev<F, Reducer>(
         &self,
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
-        end_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        last_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
         init: Reducer,
         func: F,
     ) -> Reducer
     where
-        F: FnMut(Reducer, (Self::K, Self::V)) -> ControlFlow<Reducer, Reducer>,
+        F: FnMut(Reducer, (Self::K, bool, Self::V)) -> ControlFlow<Reducer, Reducer>,
     {
         let b = self.lock().unwrap();
 
         // Start and end is stored in reverse ordered format, thats why range is reversed too.
-        let start = K::rebuild(prefix.clone(), end_suffix).hex_encoded_reverse();
-        let end = K::rebuild(prefix.clone(), <Self::K as MultiPrefixKey>::Suffix::min())
-            .hex_encoded_reverse();
+        let start = K::rebuild(prefix.clone(), last_suffix).hex_encoded_reverse();
+        let mut end = K::rebuild(
+            prefix.clone(),
+            first_suffix.unwrap_or(<Self::K as MultiPrefixKey>::Suffix::min()),
+        )
+        .hex_encoded_reverse();
+        end.push_str(crate::FULL_POSTFIX); // also include FULL_POSTFIX to list of keys
+
         match b
             .map
             .range(start..=end)
             .map(|(k, v)| {
-                let hex_key = hex::decode(&k).map_err(anyhow::Error::from).unwrap();
+                let (hex_key, full) = if k.ends_with(crate::FULL_POSTFIX) {
+                    (
+                        hex::decode(&k[..k.len() - crate::FULL_POSTFIX.len()])
+                            .map_err(anyhow::Error::from)
+                            .unwrap(),
+                        true,
+                    )
+                } else {
+                    (hex::decode(&k).map_err(anyhow::Error::from).unwrap(), false)
+                };
                 let key = Self::K::from_buffer_ord_bytes(&hex_key);
-                (key, rlp::decode(&*v).map_err(anyhow::Error::from).unwrap())
+                (
+                    key,
+                    full,
+                    rlp::decode(&*v).map_err(anyhow::Error::from).unwrap(),
+                )
             })
             .try_fold(init, func)
         {
@@ -138,6 +174,10 @@ impl SerializedMapProvider {
     pub fn take_map_unique<K: Ord + Default, V: Default>(_column: String) -> SerializedMap<K, V> {
         Default::default()
     }
+
+    pub fn list_full_backups(&self) -> BTreeSet<u64> {
+        BTreeSet::new()
+    }
 }
 
 #[cfg(test)]
@@ -170,7 +210,7 @@ mod tests {
 
         assert_eq!(
             // give all data with key (2,_)
-            db.fold_prefix_rev((2,), String::new(), |mut i, (_, v)| {
+            db.fold_prefix_rev((2,), String::new(), |mut i, (_, _, v)| {
                 i.push_str(&v);
                 i
             }),

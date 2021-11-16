@@ -42,8 +42,9 @@ where
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = HashedAddress>,
+    CodeMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     CodeMap: AsyncMap<V = Code>,
+    CodeMap: AsyncMapSearch,
     // storage
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
@@ -130,7 +131,10 @@ where
                 return v.clone().into();
             }
         }
-        let code = self.backend.find_code(address).unwrap_or_default();
+        let code = self
+            .backend
+            .find_code(address, self.block_info.num)
+            .unwrap_or_default();
         code.into()
     }
 
@@ -165,8 +169,9 @@ where
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = HashedAddress>,
+    CodeMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     CodeMap: AsyncMap<V = Code>,
+    CodeMap: AsyncMapSearch,
     // storage
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,

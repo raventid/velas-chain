@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::Result;
 use dashmap::{mapref::one::Ref, DashMap};
+use evm_bigtable_context::bigtable::{BigTable, BigtableProvider, DEFAULT_INSTANCE_NAME};
 use evm_bigtable_context::context::{BlockInfo, ChangedAccount, EvmBigTableExecutorProvider};
 use evm_bigtable_context::evm_schema::{hash_address, hash_index, EvmSchema, HashedAddress};
 use evm_bigtable_context::memory::{SerializedMap, SerializedMapProvider};
@@ -49,6 +51,10 @@ enum Args {
         // Not push any changes, just print them.
         #[structopt(long = "dry-run")]
         dry_run: bool,
+
+        // Push changes even if root hash is different from that we know by block number.
+        #[structopt(long = "force")]
+        force: bool,
     },
 }
 
@@ -64,8 +70,14 @@ fn noop_precompile(
 
 type Simulator = EvmSchema<
     SerializedMap<(HashedAddress, BlockNum), Account>,
-    SerializedMap<HashedAddress, Code>,
+    SerializedMap<(HashedAddress, BlockNum), Code>,
     SerializedMap<(HashedAddress, H256, BlockNum), H256>,
+>;
+
+type BigtableSchema = EvmSchema<
+    Arc<BigTable<(HashedAddress, BlockNum), Account>>,
+    Arc<BigTable<(HashedAddress, BlockNum), Code>>,
+    Arc<BigTable<(HashedAddress, H256, BlockNum), H256>>,
 >;
 //TODO Commands:
 // 1. Make full-backup :
@@ -193,14 +205,14 @@ struct CurrentState {
 
 impl CurrentState {
     // Init state from root
-    fn new(block_num: BlockNum, root: H256, storage: &Storage, dry_run: bool) -> Self {
+    fn new(next_block: BlockNum, root: H256, storage: &Storage) -> Self {
         info!(
-            "Initializing block with number = {}, root = {:?}",
-            block_num, root
+            "Initializing state with next_block = {}, root = {:?}",
+            next_block, root
         );
 
         let mut current_state = Self {
-            next_block: block_num,
+            next_block,
             accounts: DashMap::new(),
             storage: DashMap::new(),
             codes: DashMap::new(),
@@ -280,7 +292,7 @@ impl CurrentState {
                         simulator
                             .find_last_account_hashed(hashed_addr, header.block_number)
                             .unwrap_or_default(),
-                        simulator.find_code_hashed(hashed_addr),
+                        simulator.find_code_hashed(hashed_addr, header.block_number),
                         None,
                     )
                 };
@@ -474,7 +486,7 @@ async fn main(args: Args) {
                 info!("Dry run, do nothing after collecting keys ...");
             }
 
-            let mut state = CurrentState::new(start_block, root, &storage, dry_run);
+            let mut state = CurrentState::new(start_block, root, &storage);
             let init_block_num = 0;
             let mut simulator = if replay_txs {
                 let mut mem_provider = SerializedMapProvider::default();
@@ -506,7 +518,7 @@ async fn main(args: Args) {
                     .next_block(&storage, &ledger_storage, simulator.as_mut())
                     .await
                 {
-                    debug!("Debug push account changes to simulator at block {}", block);
+                    debug!("Debug push account changes at block {}", block);
                     for (key, account) in changes {
                         if let Some(simulator) = &mut simulator {
                             simulator.push_account_change_hashed(
@@ -530,8 +542,62 @@ async fn main(args: Args) {
             block,
             root,
             dry_run,
+            force,
         } => {
-            todo!()
+            let storage = Storage::open_persistent(evm_state_path).unwrap();
+            let ledger_storage = LedgerStorage::new(true, Duration::from_secs(10).into())
+                .await
+                .unwrap();
+            if dry_run {
+                info!("Dry run, do nothing after collecting keys ...");
+            }
+
+            let expected_root = {
+                ledger_storage
+                    .get_evm_confirmed_block_header(
+                        block
+                    )
+                    .await
+                    .expect("No root hash found, expecting block before starting to be found in bigtable")
+                    .state_root
+            };
+
+            info!(
+                "Trying to make snapshot with root:{:?} at block {:?}",
+                root, block
+            );
+
+            if expected_root != root {
+                warn!("Found that block state root, is different from one that you provide: block_root:{:?}, provided:{:?}", expected_root, root);
+                if force {
+                    error!("--force argument found, making snapshot anyway");
+                } else {
+                    std::process::exit(1)
+                }
+            }
+
+            // Creating state from our root, with next_block = block + 1;
+            let mut state = CurrentState::new(block + 1, root, &storage);
+
+            let mut provider = BigtableProvider::new(DEFAULT_INSTANCE_NAME, dry_run).unwrap();
+            let mut bigtable_schema = BigtableSchema::new_bigtable(&mut provider).unwrap();
+            for ref_kv in &state.accounts {
+                let key = ref_kv.key();
+                let account = ref_kv.value();
+                let code = state.codes.get(key).map(|v| v.value().clone());
+                let storage_updates = state
+                    .storage
+                    .get(key)
+                    .map(|v| v.value().iter().map(|v| (*v.key(), *v.value())).collect())
+                    .unwrap_or_default();
+                bigtable_schema.push_account_change_hashed_full(
+                    *key,
+                    block,
+                    account.clone(),
+                    code,
+                    storage_updates,
+                );
+            }
         }
     }
 }

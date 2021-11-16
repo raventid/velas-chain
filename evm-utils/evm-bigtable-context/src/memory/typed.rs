@@ -48,23 +48,24 @@ where
         &self,
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
         end_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
         init: Reducer,
         func: F,
     ) -> Reducer
     where
-        F: FnMut(Reducer, (Self::K, Self::V)) -> ControlFlow<Reducer, Reducer>,
+        F: FnMut(Reducer, (Self::K, bool, Self::V)) -> ControlFlow<Reducer, Reducer>,
     {
         let b = self.lock().unwrap();
         let start = <Self::K as MultiPrefixKey>::rebuild(
             prefix.clone(),
-            <Self::K as MultiPrefixKey>::Suffix::min(),
+            first_suffix.unwrap_or(<Self::K as MultiPrefixKey>::Suffix::min()),
         );
         let end = <Self::K as MultiPrefixKey>::rebuild(prefix, end_suffix);
 
         match b
             .range(start..=end)
             .rev()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(k, v)| (k.clone(), false, v.clone()))
             .try_fold(init, func)
         {
             ControlFlow::Break(breaked) => breaked,
@@ -132,7 +133,7 @@ mod tests {
         db.set((2, 1), " Vlad");
 
         assert_eq!(
-            db.fold_prefix_rev((2,), String::new(), |mut i, (_, v)| {
+            db.fold_prefix_rev((2,), String::new(), |mut i, (_, _, v)| {
                 i.push_str(v);
                 i
             }),

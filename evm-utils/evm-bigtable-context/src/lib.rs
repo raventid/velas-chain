@@ -10,6 +10,8 @@ pub mod evm_schema;
 pub mod memory;
 use snafu::{ResultExt, Snafu};
 
+const FULL_POSTFIX: &str = "full";
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display(
@@ -175,6 +177,13 @@ pub trait AsyncMap {
     fn remove(&self, key: &Self::K);
 }
 
+// The same write mechanism but use the power of string ordered key, to create
+// additional key with `FULL_POSTFIX` at end.
+// This should allow fast iteration to this
+pub trait WriteFull: AsyncMap {
+    fn set_full(&self, key: Self::K, value: Self::V);
+}
+
 pub trait AsyncMapSearch: AsyncMap
 where
     Self::K: MultiPrefixKey,
@@ -188,12 +197,13 @@ where
         mut func: F,
     ) -> Reducer
     where
-        F: FnMut(Reducer, (Self::K, Self::V)) -> Reducer,
+        F: FnMut(Reducer, (Self::K, bool, Self::V)) -> Reducer,
         <Self::K as MultiPrefixKey>::Suffix: RangeValue,
     {
         self.search_rev(
             prefix,
             <Self::K as MultiPrefixKey>::Suffix::max(),
+            None,
             init,
             |init, arg| ControlFlow::Continue(func(init, arg)),
         )
@@ -208,12 +218,13 @@ where
     fn search_rev<F, Reducer>(
         &self,
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
-        end_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        last_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
         init: Reducer,
         func: F,
     ) -> Reducer
     where
-        F: FnMut(Reducer, (Self::K, Self::V)) -> ControlFlow<Reducer, Reducer>;
+        F: FnMut(Reducer, (Self::K, bool, Self::V)) -> ControlFlow<Reducer, Reducer>;
 }
 
 // TODO: macros

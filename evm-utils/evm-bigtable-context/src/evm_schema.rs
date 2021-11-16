@@ -1,5 +1,5 @@
 use sha3::{Digest, Keccak256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 // keys;
 use crate::{
@@ -119,12 +119,13 @@ pub struct EvmSchema<AccountMap, CodeMap, StorageMap> {
     accounts: AccountMap,
     code: CodeMap,
     storage: StorageMap,
+    full_backups: BTreeSet<BlockNum>,
 }
 
 impl
     EvmSchema<
         MemMap<(HashedAddress, BlockNum), Account>,
-        MemMap<HashedAddress, Code>,
+        MemMap<(HashedAddress, BlockNum), Code>,
         MemMap<(HashedAddress, H256, BlockNum), H256>,
     >
 {
@@ -133,6 +134,7 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
+            full_backups: BTreeSet::new(),
         })
     }
 }
@@ -140,7 +142,7 @@ impl
 impl
     EvmSchema<
         SerializedMap<(HashedAddress, BlockNum), Account>,
-        SerializedMap<HashedAddress, Code>,
+        SerializedMap<(HashedAddress, BlockNum), Code>,
         SerializedMap<(HashedAddress, H256, BlockNum), H256>,
     >
 {
@@ -149,6 +151,7 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
+            full_backups: provider.list_full_backups(),
         })
     }
 }
@@ -156,7 +159,7 @@ impl
 impl
     EvmSchema<
         Arc<BigTable<(HashedAddress, BlockNum), Account>>,
-        Arc<BigTable<HashedAddress, Code>>,
+        Arc<BigTable<(HashedAddress, BlockNum), Code>>,
         Arc<BigTable<(HashedAddress, H256, BlockNum), H256>>,
     >
 {
@@ -165,6 +168,7 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
+            full_backups: provider.list_full_backups(),
         })
     }
 }
@@ -178,13 +182,21 @@ where
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = HashedAddress>,
+    CodeMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     CodeMap: AsyncMap<V = Code>,
+    CodeMap: AsyncMapSearch,
     // storage
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
 {
+    fn last_snapshot_since(&self, key: H256, last_block_num: BlockNum) -> Option<BlockNum> {
+        self.full_backups
+            .range(..last_block_num)
+            .rev()
+            .next()
+            .copied()
+    }
     pub fn find_last_account(&self, key: H160, last_block_num: BlockNum) -> Option<Account> {
         debug!(
             "Searching for account state = {:?}, since_block = {}",
@@ -192,9 +204,9 @@ where
         );
         self.find_last_account_hashed(hash_address(key), last_block_num)
     }
-    pub fn find_code(&self, key: H160) -> Option<Code> {
+    pub fn find_code(&self, key: H160, last_block_num: BlockNum) -> Option<Code> {
         debug!("Searching for account code = {:?}", key);
-        let code = self.find_code_hashed(hash_address(key));
+        let code = self.find_code_hashed(hash_address(key), last_block_num);
         // debug!("Searching for account code = {:?}, code = {:?}", key, code);
         code
     }
@@ -232,8 +244,9 @@ where
         self.accounts.search_rev(
             (key,),
             last_block_num,
+            dbg!(self.last_snapshot_since(key, last_block_num)),
             None,
-            |_, ((addr, block), account)| {
+            |_, ((addr, block), _is_full, account)| {
                 debug_assert_eq!(key, addr);
                 debug!(
                     "Found account at block = {}, account = {:?}",
@@ -243,8 +256,18 @@ where
             },
         )
     }
-    pub fn find_code_hashed(&self, key: HashedAddress) -> Option<Code> {
-        self.code.get(&key)
+    pub fn find_code_hashed(&self, key: HashedAddress, last_block_num: BlockNum) -> Option<Code> {
+        self.code.search_rev(
+            (key,),
+            last_block_num,
+            self.last_snapshot_since(key, last_block_num),
+            None,
+            |_, ((addr, block), _is_full, code)| {
+                debug_assert_eq!(key, addr);
+                trace!("Found code at block = {}, code = {:?}", block, code);
+                ControlFlow::Break(Some(code))
+            },
+        )
     }
     pub fn find_storage_hashed(
         &self,
@@ -259,8 +282,9 @@ where
         self.storage.search_rev(
             (key, index),
             last_block_num,
+            dbg!(self.last_snapshot_since(key, last_block_num)),
             None,
-            |_, ((addr, index_found, block), account)| {
+            |_, ((addr, index_found, block), _is_full, account)| {
                 debug_assert_eq!(key, addr);
                 debug_assert_eq!(index, index_found);
                 debug!(
@@ -279,14 +303,38 @@ where
         code: Option<Code>,
         storage_updates: HashMap<H256, H256>,
     ) {
-        self.accounts.set((key, block_num), state);
         if let Some(code) = code {
-            self.code.set(key, code);
+            self.code.set((key, block_num), code);
         }
         for (storage_idx, storage_value) in storage_updates {
             self.storage
                 .set((key, storage_idx, block_num), storage_value);
         }
+        self.accounts.set((key, block_num), state);
+    }
+
+    // publish all changes
+    pub fn push_account_change_hashed_full(
+        &mut self,
+        key: HashedAddress,
+        block_num: BlockNum,
+        state: Account,
+        code: Option<Code>,
+        storage_updates: HashMap<H256, H256>,
+    ) where
+        AccountMap: WriteFull,
+        CodeMap: WriteFull,
+        StorageMap: WriteFull,
+    {
+        if let Some(code) = code {
+            self.code.set_full((key, block_num), code);
+        }
+        for (storage_idx, storage_value) in storage_updates {
+            self.storage
+                .set_full((key, storage_idx, block_num), storage_value);
+        }
+        self.accounts.set_full((key, block_num), state);
+        self.full_backups.insert(block_num);
     }
 }
 
@@ -298,8 +346,9 @@ where
     AccountMap: AsyncMap<V = Account>,
     AccountMap: AsyncMapSearch,
     // code
-    CodeMap: AsyncMap<K = HashedAddress>,
+    CodeMap: AsyncMap<K = (HashedAddress, BlockNum)>,
     CodeMap: AsyncMap<V = Code>,
+    CodeMap: AsyncMapSearch,
     // storage
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
@@ -330,13 +379,27 @@ where
     ) -> Option<bool> {
         blocks.into_iter().fold(None, |mut init, b| {
             for (idx, data_before) in storage {
-                let data = self.find_storage(key, *idx, b).unwrap_or_default();
-                let new_result = data == *data_before;
+                let data = self.find_storage(key, *idx, dbg!(b)).unwrap_or_default();
+                let new_result = dbg!(data) == dbg!(*data_before);
                 init = init
                     .filter(|v| *v == new_result)
-                    .or_else(|| Some(new_result))
+                    .or_else(|| Some(new_result));
             }
             init
+        })
+    }
+
+    pub fn check_code_in_block_range(
+        &self,
+        key: H160,
+        code: &Code,
+        blocks: RangeInclusive<BlockNum>,
+    ) -> Option<bool> {
+        blocks.into_iter().fold(None, |mut init, b| {
+            let data = self.find_code(key, b).unwrap_or_default();
+            let new_result = data == *code;
+            init.filter(|v| *v == new_result)
+                .or_else(|| Some(new_result))
         })
     }
 }
@@ -416,10 +479,9 @@ mod test {
             .check_account_in_block_range(account_key, &account, 1..=4)
             .unwrap());
 
-        assert_eq!(
-            evm_schema.find_code(account_key).unwrap_or_default(),
-            some_code
-        );
+        assert!(evm_schema
+            .check_code_in_block_range(account_key, &some_code, 0..=4)
+            .unwrap());
     }
 
     #[test]
@@ -443,7 +505,7 @@ mod test {
             account_key,
             block,
             account.clone(),
-            some_code.clone().into(),
+            None,
             storage_updates.clone(),
         );
 
@@ -458,7 +520,7 @@ mod test {
             account_key,
             block,
             account_update.clone(),
-            None,
+            some_code.clone().into(),
             storage_updates2.clone(),
         );
 
@@ -495,9 +557,182 @@ mod test {
             .check_storage_in_block_range(account_key, &storage_updates, 1..=4)
             .unwrap());
 
-        assert_eq!(
-            evm_schema.find_code(account_key).unwrap_or_default(),
-            some_code
+        // note that in this test code inserted in 1st block.
+        assert!(!evm_schema
+            .check_code_in_block_range(account_key, &some_code, 0..=0)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_code_in_block_range(account_key, &some_code, 1..=4)
+            .unwrap());
+    }
+
+    #[test]
+    fn insert_and_find_account_serialized_with_full_snapshot() {
+        env_logger::Builder::new().init();
+        let mut mem_provider = SerializedMapProvider::default();
+        let mut evm_schema = EvmSchema::new_serialized_tmp(&mut mem_provider).unwrap();
+
+        let account_key = H160::repeat_byte(0x37);
+        let account = Account {
+            nonce: 1.into(),
+            balance: 2.into(),
+            storage_root: H256::repeat_byte(0x2),
+            code_hash: H256::repeat_byte(0x3),
+        };
+        let some_code = Code::new(vec![1, 2, 3, 4]);
+
+        let some_other_code = Code::new(vec![3, 2, 3, 4]);
+
+        let block = 0;
+
+        let storage_updates = create_storage_from_u8((0..5).into_iter().map(|i| (i, 0xff)));
+        evm_schema.push_account_change(
+            account_key,
+            block,
+            account.clone(),
+            some_code.clone().into(),
+            storage_updates.clone(),
         );
+
+        let block = 1;
+
+        let mut account_update = account.clone();
+        account_update.balance = 1231.into();
+        account_update.nonce = 7.into();
+
+        let storage_updates_snapshot =
+            create_storage_from_u8((5..7).into_iter().map(|i| (i, 0xee)));
+        evm_schema.push_account_change_hashed_full(
+            // note that all addresses are hashed
+            hash_address(account_key),
+            block,
+            account_update.clone(),
+            some_other_code.clone().into(),
+            storage_updates_snapshot
+                .clone()
+                .into_iter()
+                .map(|(k, v)| (hash_index(k), v))
+                .collect(),
+        );
+
+        let block = 7;
+
+        let mut account_update_last = account.clone();
+        account_update_last.balance = 6331.into();
+        account_update_last.nonce = 7.into();
+
+        let storage_updates_last = create_storage_from_u8((9..12).into_iter().map(|i| (i, 0x3e)));
+        evm_schema.push_account_change(
+            account_key,
+            block,
+            account_update_last.clone(),
+            None,
+            storage_updates_last.clone(),
+        );
+        // check zero block state
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account, 0..=0)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates, 0..=0)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_code_in_block_range(account_key, &some_code, 0..=0)
+            .unwrap());
+
+        // updated account is not available at zero block
+        assert!(!evm_schema
+            .check_account_in_block_range(account_key, &account_update, 0..=0)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_account_in_block_range(account_key, &account_update_last, 0..=0)
+            .unwrap());
+
+        // storage updates are not available too
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_snapshot, 0..=0)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_last, 0..=0)
+            .unwrap());
+
+        // 1st block changes
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account_update, 1..=6)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_code_in_block_range(account_key, &some_other_code, 1..=15)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_snapshot, 1..=20)
+            .unwrap());
+
+        // zero block updates are not actual after full backup (account replaced, storage)
+
+        assert!(!evm_schema
+            .check_account_in_block_range(account_key, &account, 1..=4)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates, 1..=4)
+            .unwrap());
+
+        assert!(!evm_schema // note: in real case code is immutable
+            .check_code_in_block_range(account_key, &some_code, 1..=15)
+            .unwrap());
+
+        // latest block update
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account_update_last, 7..=15)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_last, 7..=15)
+            .unwrap());
+
+        // check that storage was available only after commit
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_last, 0..=6)
+            .unwrap());
+
+        // reapply last changes as full changes, after this code would be not availabe, and storage would be limmited available
+        evm_schema.push_account_change_hashed_full(
+            hash_address(account_key),
+            block,
+            account_update_last.clone(),
+            None,
+            storage_updates_last.clone(),
+        );
+
+        assert!(evm_schema
+            .check_account_in_block_range(account_key, &account_update_last, 7..=15)
+            .unwrap());
+
+        assert!(evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_last, 7..=15)
+            .unwrap());
+
+        assert!(evm_schema // note: in real case code is immutable
+            .find_code(account_key, 15)
+            .is_none());
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates_snapshot, 7..=15)
+            .unwrap());
+
+        assert!(!evm_schema
+            .check_storage_in_block_range(account_key, &storage_updates, 7..=15)
+            .unwrap());
     }
 }

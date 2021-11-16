@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::time::Duration;
 use std::{marker::PhantomData, ops::Sub};
@@ -7,6 +8,7 @@ use solana_storage_bigtable::bigtable::BigTableConnection;
 use solana_storage_bigtable::bigtable::Result;
 use tokio::runtime::Handle;
 use tokio::runtime::Runtime;
+pub const DEFAULT_INSTANCE_NAME: &'static str = "solana-ledger";
 
 #[derive(Clone)]
 pub struct BigTable<K, V> {
@@ -31,7 +33,7 @@ impl<K, V> BigTable<K, V> {
 
 impl<K, V> AsyncMap for Arc<BigTable<K, V>>
 where
-    K: Clone + Ord + FixedSizedKey,
+    K: Clone + FixedSizedKey,
     V: Clone + rlp::Decodable + rlp::Encodable + Default + Debug,
 {
     type K = K;
@@ -67,6 +69,27 @@ where
     }
 }
 
+impl<K, V> WriteFull for Arc<BigTable<K, V>>
+where
+    K: Clone + FixedSizedKey,
+    V: Clone + rlp::Decodable + rlp::Encodable + Default + Debug,
+{
+    // TODO: Split serialization and set write interface.
+    fn set_full(&self, key: Self::K, value: Self::V) {
+        let mut key = key.hex_encoded_reverse();
+        key.push_str(crate::FULL_POSTFIX);
+
+        self.runtime
+            .block_on({
+                self.connection
+                    .client()
+                    .put_rlp_cells(&self.table, &[(key, value)])
+            })
+            .map_err(anyhow::Error::from)
+            .unwrap();
+    }
+}
+
 impl<K, V> AsyncMapSearch for Arc<BigTable<K, V>>
 where
     K: MultiPrefixKey + Clone,
@@ -78,12 +101,13 @@ where
     fn search_rev<F, Reducer>(
         &self,
         prefix: <Self::K as MultiPrefixKey>::Prefixes,
-        end_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        last_suffix: <Self::K as MultiPrefixKey>::Suffix,
+        first_suffix: Option<<Self::K as MultiPrefixKey>::Suffix>,
         init: Reducer,
         func: F,
     ) -> Reducer
     where
-        F: FnMut(Reducer, (Self::K, Self::V)) -> ControlFlow<Reducer, Reducer>,
+        F: FnMut(Reducer, (Self::K, bool, Self::V)) -> ControlFlow<Reducer, Reducer>,
     {
         const LIMIT: i64 = 10;
         // Note in bigtable we store in reverse index, so end suffix is actually starting point.
@@ -91,15 +115,20 @@ where
         // Example key: 0xaabbcc...f1a0fffffffffffffffa
         // which correspond to some multikey: (0xaabbcc...f1a0, 0x5) (0x5 is stored in reversed format = fffffffffffffffa)
         //
-        let start = K::rebuild(prefix.clone(), end_suffix);
-        let end = K::rebuild(prefix.clone(), <Self::K as MultiPrefixKey>::Suffix::min());
+        let start = K::rebuild(prefix.clone(), last_suffix).hex_encoded_reverse();
+        let mut end = K::rebuild(
+            prefix.clone(),
+            first_suffix.unwrap_or(<Self::K as MultiPrefixKey>::Suffix::min()),
+        )
+        .hex_encoded_reverse();
+        end.push_str(crate::FULL_POSTFIX);
 
         let result = self
             .runtime
             .block_on(self.connection.client().get_row_data(
                 &self.table,
-                Some(start.hex_encoded_reverse()),
-                Some(end.hex_encoded_reverse()),
+                Some(start),
+                Some(end),
                 LIMIT,
             ))
             .map_err(anyhow::Error::from)
@@ -107,12 +136,22 @@ where
         match result
             .into_iter()
             .flat_map(|(k, v)| v.into_iter().map(move |(c, v)| (k.clone(), (c, v))))
-            .filter_map(|(k, (c, v))| {
+            .filter_map(|(mut k, (c, v))| {
                 if c == "rlp" {
-                    let hex_key = hex::decode(&k).map_err(anyhow::Error::from).unwrap();
+                    let (hex_key, full) = if k.ends_with(crate::FULL_POSTFIX) {
+                        (
+                            hex::decode(&k[..k.len() - crate::FULL_POSTFIX.len()])
+                                .map_err(anyhow::Error::from)
+                                .unwrap(),
+                            true,
+                        )
+                    } else {
+                        (hex::decode(&k).map_err(anyhow::Error::from).unwrap(), false)
+                    };
                     let key = Self::K::from_buffer_ord_bytes(&hex_key);
                     Some((
                         key,
+                        full,
                         rlp::decode(
                             &solana_storage_bigtable::compression::decompress(&*v)
                                 .map_err(anyhow::Error::from)
@@ -186,6 +225,10 @@ impl BigtableProvider {
             }
         }
     }
+
+    pub fn list_full_backups(&self) -> BTreeSet<u64> {
+        BTreeSet::new()
+    }
 }
 
 pub fn execute_and_handle_errors<F, T>(func: F) -> std::result::Result<T, anyhow::Error>
@@ -219,7 +262,7 @@ mod test {
         let data: BTreeSet<_> = ["fff", "ffe", "ffd", "ffefull"].iter().copied().collect();
         let result: Vec<&str> = data.range("ffe"..="fff").copied().collect();
 
-        // lexicographical order iterator from some ffe to fff should return full version of ffe before ffe.
+        // lexicographical order iterator from some ffe to fff should return full version of ffe after ffe.
         assert_eq!(result, ["ffe", "ffefull", "fff"])
     }
 }
