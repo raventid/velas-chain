@@ -215,7 +215,7 @@ where
                     reset_storage: _,
                 } => {
                     log::debug!(
-                        "Apply::Modify address = {}, basic = {:?}, code = {:?}",
+                        "Apply::Modify address = {:?}, basic = {:?}, code = {:?}",
                         address,
                         basic,
                         code

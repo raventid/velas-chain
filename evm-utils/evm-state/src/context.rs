@@ -194,7 +194,7 @@ impl<'a> BackendProvider<'a, Incomming> for ExecutorContextProvider {
                     reset_storage: _, // TODO implement reset storage
                 } => {
                     debug!(
-                        "Apply::Modify address = {}, basic = {:?}, code = {:?}",
+                        "Apply::Modify address = {:?}, basic = {:?}, code = {:?}",
                         address, basic, code
                     );
 

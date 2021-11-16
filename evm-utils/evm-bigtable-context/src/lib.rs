@@ -8,6 +8,7 @@ pub mod bigtable;
 pub mod context;
 pub mod evm_schema;
 pub mod memory;
+pub mod utils;
 use snafu::{ResultExt, Snafu};
 
 const FULL_POSTFIX: &str = "full";

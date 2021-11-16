@@ -389,33 +389,8 @@ impl CurrentState {
                         .traverse(Default::default(), acc.storage_root)
                         .unwrap();
                     ;
-                    /// Return map that represent differences of two dashmaps,
-                    /// H256::zero() if data was removed.
-                    fn diff_map(ext_data: Option<Ref<H256, DashMap<H256, H256>>>, mut changed_store: DashMap<H256, H256>) -> HashMap<H256, H256> {
-                        use std::str::FromStr;
-                        // iterate over existing storage, to check if some fields was cleared.
-                        let mut ext_data: HashMap<H256, H256> = if let Some(ext_data) = ext_data{
-                            ext_data.value().iter().filter_map(|r|{
-                                let idx = r.key();
-                                let data = r.value();
-                                let (_, new_data) = changed_store.remove(idx)
-                                        .unwrap_or_default(); // if none - then changed_store contain 0x00.00 at this place
-                                if *data != new_data {
-                                    return Some((*idx, new_data))
-                                }
-                                None
-                            }).collect()
-                        } else {
-                            Default::default()
-                        };
-                        // iterate over remaining data and insert it if changed
-                        for (idx, new_data) in changed_store {
-                            let result = ext_data.insert(idx, new_data).is_none();
-                            debug_assert!(result);
-                        }
-                        ext_data
-                    }
-                    account_change.storage = diff_map(self.storage.get(&key), storage_state.inspector.storage_data);
+
+                    account_change.storage = evm_bigtable_context::utils::diff_map(self.storage.get(&key), storage_state.inspector.storage_data);
                 }
                 (key, account_change)
             })
@@ -430,7 +405,12 @@ impl CurrentState {
             self.accounts.insert(*key, change.new_state);
             let mut entry = self.storage.entry(*key).or_insert(DashMap::new());
             for (idx, data) in &change.storage {
-                entry.insert(*idx, *data);
+                if *data == H256::zero() {
+                    //don't waste storage on empty data
+                    entry.remove(idx);
+                } else {
+                    entry.insert(*idx, *data);
+                }
             }
             if let Some(code) = &change.code {
                 self.codes.insert(*key, code.clone());
