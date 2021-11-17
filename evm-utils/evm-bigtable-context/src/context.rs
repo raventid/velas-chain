@@ -8,7 +8,7 @@ use evm_schema::{EvmSchema, HashedAddress};
 use evm_state::{evm, Account, Apply, BlockNum, BlockVersion, Code, EvmBackend, H160, H256, U256};
 use evm_state::{BackendProvider, ChainContext, EvmConfig, TransactionContext};
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub struct ChangedAccount {
     pub storage: HashMap<H256, H256>,
     pub balance: U256,
@@ -71,6 +71,7 @@ where
     }
 
     fn block_hash(&self, number: U256) -> H256 {
+        log::error!("Requesting block number: {}", number);
         let current_block = self.block_number();
         if number >= current_block
             || current_block - number - U256::one()

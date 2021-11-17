@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap},
     sync::Arc,
     time::Duration,
@@ -11,8 +12,8 @@ use evm_bigtable_context::context::{BlockInfo, ChangedAccount, EvmBigTableExecut
 use evm_bigtable_context::evm_schema::{hash_address, hash_index, EvmSchema, HashedAddress};
 use evm_bigtable_context::memory::{SerializedMap, SerializedMapProvider};
 use evm_state::{
-    storage, Account, AccountState, BlockNum, BlockVersion, Code, Storage, TransactionInReceipt,
-    TransactionReceipt, H256,
+    storage, Account, AccountState, BlockNum, BlockVersion, Code, Storage, TransactionAction,
+    TransactionInReceipt, TransactionReceipt, H256,
 };
 use evm_state::{Context, EvmBackend, EvmConfig, Executor, ExitError, ExitSucceed, H160}; // simulation
 use log::LevelFilter;
@@ -37,6 +38,9 @@ enum Args {
         dry_run: bool,
         #[structopt(long = "validate-by-replay-tx")]
         replay_txs: bool,
+        // during simulation cleanup balance of swapper after swap to native.
+        #[structopt(long = "cleanup-after-swap")]
+        cleanup_native_balance_after_swap: bool,
     },
     FullBackup {
         // Path to evm-state database.
@@ -96,7 +100,10 @@ pub fn simulate_tx(
     root: H256,
     timestamp: u64,
     block_version: BlockVersion,
+    cleanup_native_balance_after_swap: bool,
 ) -> Result<BTreeMap<H160, ChangedAccount>, anyhow::Error> {
+    const AMOUNT_FOR_SIMULATE: u64 = 10_000_000_000_000_000; // just big enough value for simulate to pass
+
     info!(
         "Simulating block: block_num = {}, state_root = {:?}",
         num, root
@@ -124,19 +131,8 @@ pub fn simulate_tx(
     );
     for tx in txs {
         debug!("Simulate tx = {:?}", tx);
-        let execution_context = EvmBigTableExecutorProvider {
-            schema: &mut *simulator,
-            changes: &mut changes_cache,
-            used_gas: &mut used_gas,
-            block_info: BlockInfo {
-                root,
-                num,
-                block_version,
-                timestamp,
-            },
-        };
 
-        let (tx_hash, caller, nonce, gas_price, gas_limit, action, data, value, chain_id) =
+        let (tx_hash, caller, nonce, gas_price, gas_limit, action, data, value, chain_id, unsigned) =
             match tx.transaction {
                 TransactionInReceipt::Unsigned(t) => (
                     t.tx_id_hash(),
@@ -148,6 +144,7 @@ pub fn simulate_tx(
                     t.unsigned_tx.input,
                     t.unsigned_tx.value,
                     t.chain_id,
+                    true,
                 ),
                 TransactionInReceipt::Signed(t) => (
                     t.tx_id_hash(),
@@ -162,8 +159,71 @@ pub fn simulate_tx(
                     t.signature
                         .chain_id()
                         .expect("We didn't support Null at chain_id"),
+                    false,
                 ),
             };
+
+        let (user_accounts) = if let TransactionAction::Call(address) = action {
+            let mut meta_keys = vec![];
+
+            // Shortcut for swap tokens to native, will add solana account to transaction.
+            if address == *solana_evm_loader_program::precompiles::ETH_TO_VLX_ADDR {
+                debug!("Found transferToNative transaction");
+                match solana_evm_loader_program::precompiles::ETH_TO_VLX_CODE.parse_abi(&data) {
+                    Ok(pk) => {
+                        info!("Adding account to meta = {}", pk);
+
+                        let user_account = RefCell::new(Default::default());
+                        meta_keys.push((user_account, pk))
+                    }
+                    Err(e) => {
+                        error!("Error in parsing abi = {}", e);
+                    }
+                }
+            }
+
+            meta_keys
+        } else {
+            vec![]
+        };
+
+        // system tx are unsigned
+        if unsigned {
+            // check if it native swap, then predeposit, amount, to pass transaction
+            if caller == *solana_evm_loader_program::precompiles::ETH_TO_VLX_ADDR {
+                let amount = value + gas_limit * gas_price;
+                changes_cache
+                    .entry(caller)
+                    .or_insert_with(|| {
+                        let account = simulator.find_last_account(caller, num).unwrap_or_default();
+                        ChangedAccount {
+                            nonce: account.nonce,
+                            balance: account.balance,
+                            ..Default::default()
+                        }
+                    })
+                    .balance += amount;
+            }
+        }
+
+        let user_accounts: Vec<_> = user_accounts
+            .iter()
+            .map(|(user_account, pk)| {
+                solana_sdk::keyed_account::KeyedAccount::new(pk, false, user_account)
+            })
+            .collect();
+
+        let execution_context = EvmBigTableExecutorProvider {
+            schema: &mut *simulator,
+            changes: &mut changes_cache,
+            used_gas: &mut used_gas,
+            block_info: BlockInfo {
+                root,
+                num,
+                block_version,
+                timestamp,
+            },
+        };
         let exit_result = executor.transaction_execute_raw(
             execution_context,
             caller,
@@ -175,8 +235,31 @@ pub fn simulate_tx(
             value,
             chain_id.into(),
             tx_hash,
-            noop_precompile,
+            solana_evm_loader_program::precompiles::simulation_entrypoint(
+                true, // support precompile
+                AMOUNT_FOR_SIMULATE,
+                &user_accounts,
+            ),
         )?;
+
+        if cleanup_native_balance_after_swap {
+            changes_cache
+                .entry(*solana_evm_loader_program::precompiles::ETH_TO_VLX_ADDR)
+                .or_insert_with(|| {
+                    let account = simulator
+                        .find_last_account(
+                            *solana_evm_loader_program::precompiles::ETH_TO_VLX_ADDR,
+                            num,
+                        )
+                        .unwrap_or_default();
+                    ChangedAccount {
+                        nonce: account.nonce,
+                        balance: account.balance,
+                        ..Default::default()
+                    }
+                })
+                .balance = 0.into();
+        }
 
         trace!("Simulate tx result = {:?}", exit_result);
     }
@@ -226,6 +309,7 @@ impl CurrentState {
         evm_state: &Storage,
         bigtable_storage: &LedgerStorage,
         mut replay_simulator: Option<&mut Simulator>,
+        cleanup_native_balance_after_swap: bool,
     ) -> Option<(
         HashMap<HashedAddress, AccountChange>,
         Result<(), anyhow::Error>,
@@ -248,6 +332,7 @@ impl CurrentState {
                     header.state_root,
                     header.timestamp,
                     header.version,
+                    cleanup_native_balance_after_swap,
                 ))
             } else {
                 header = bigtable_storage
@@ -447,6 +532,7 @@ async fn main(args: Args) {
             end_block,
             dry_run,
             replay_txs,
+            cleanup_native_balance_after_swap,
         } => {
             let storage = Storage::open_persistent(evm_state_path).unwrap();
 
@@ -507,7 +593,12 @@ async fn main(args: Args) {
             for block in start_block..=end_block {
                 assert_eq!(state.next_block, block);
                 match state
-                    .next_block(&storage, &ledger_storage, simulator.as_mut())
+                    .next_block(
+                        &storage,
+                        &ledger_storage,
+                        simulator.as_mut(),
+                        cleanup_native_balance_after_swap,
+                    )
                     .await
                 {
                     Some((changes, e)) => {
