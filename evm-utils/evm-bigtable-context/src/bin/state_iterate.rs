@@ -403,7 +403,6 @@ impl CurrentState {
                     //     "storage len not equal"
                     // );
                     for (idx, data) in simulator_acc.storage {
-                        dbg!(idx);
                         let idx = hash_index(idx);
                         let storage_data =
                             if let Some(data) = storage.and_then(|s| s.get(&idx).copied()) {

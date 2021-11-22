@@ -15,6 +15,7 @@ pub struct ChangedAccount {
     pub nonce: U256,
     pub code: Option<Code>,
 }
+
 #[derive(Debug)]
 pub struct ExecutorContext<'a, A, C, S> {
     pub(crate) backend: &'a mut EvmSchema<A, C, S>,
@@ -155,15 +156,15 @@ where
     }
 }
 
-pub struct EvmBigTableExecutorProvider<'a, A, C, S> {
-    pub schema: &'a mut EvmSchema<A, C, S>,
+pub struct EvmBigTableExecutorProvider<'a, A, C, S, F> {
+    pub schema: &'a mut EvmSchema<A, C, S, F>,
     pub changes: &'a mut BTreeMap<H160, ChangedAccount>,
     pub used_gas: &'a mut u64,
     pub block_info: BlockInfo,
 }
 
-impl<'a, State, AccountMap, CodeMap, StorageMap> BackendProvider<'a, State>
-    for EvmBigTableExecutorProvider<'a, AccountMap, CodeMap, StorageMap>
+impl<'a, State, AccountMap, CodeMap, StorageMap, FullBackups> BackendProvider<'a, State>
+    for EvmBigTableExecutorProvider<'a, AccountMap, CodeMap, StorageMap, FullBackups>
 where
     // account
     AccountMap: AsyncMap<K = (HashedAddress, BlockNum)>,
@@ -177,6 +178,10 @@ where
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
+
+    FullBackups: AsyncMap<K = BlockNum>,
+    FullBackups: AsyncMap<V = BlockNum>,
+    FullBackups: AsyncMapSearch,
 {
     type Output = ExecutorContext<'a, AccountMap, CodeMap, StorageMap>;
     fn construct(

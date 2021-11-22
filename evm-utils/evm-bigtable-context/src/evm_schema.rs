@@ -115,11 +115,11 @@ pub fn hash_index(idx: H256) -> HashedAddress {
 //
 
 #[derive(Debug, Clone)]
-pub struct EvmSchema<AccountMap, CodeMap, StorageMap> {
+pub struct EvmSchema<AccountMap, CodeMap, StorageMap, FullBackups> {
     accounts: AccountMap,
     code: CodeMap,
     storage: StorageMap,
-    full_backups: BTreeSet<BlockNum>,
+    full_backups: FullBackups,
 }
 
 impl
@@ -127,6 +127,7 @@ impl
         MemMap<(HashedAddress, BlockNum), Account>,
         MemMap<(HashedAddress, BlockNum), Code>,
         MemMap<(HashedAddress, H256, BlockNum), H256>,
+        MemMap<BlockNum, BlockNum>,
     >
 {
     pub fn new_mem_tmp(provider: &mut MemMapProvider) -> Result<Self> {
@@ -134,7 +135,7 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
-            full_backups: BTreeSet::new(),
+            full_backups: provider.take_map_shared(String::from("evm-state-backup-info"))?,
         })
     }
 }
@@ -144,6 +145,7 @@ impl
         SerializedMap<(HashedAddress, BlockNum), Account>,
         SerializedMap<(HashedAddress, BlockNum), Code>,
         SerializedMap<(HashedAddress, H256, BlockNum), H256>,
+        SerializedMap<BlockNum, BlockNum>,
     >
 {
     pub fn new_serialized_tmp(provider: &mut SerializedMapProvider) -> Result<Self> {
@@ -151,7 +153,7 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
-            full_backups: provider.list_full_backups(),
+            full_backups: provider.take_map_shared(String::from("evm-state-backup-info"))?,
         })
     }
 }
@@ -161,6 +163,7 @@ impl
         Arc<BigTable<(HashedAddress, BlockNum), Account>>,
         Arc<BigTable<(HashedAddress, BlockNum), Code>>,
         Arc<BigTable<(HashedAddress, H256, BlockNum), H256>>,
+        Arc<BigTable<BlockNum, BlockNum>>,
     >
 {
     pub fn new_bigtable(provider: &mut BigtableProvider) -> Result<Self> {
@@ -168,13 +171,14 @@ impl
             accounts: provider.take_map_shared(String::from("evm-accounts"))?,
             storage: provider.take_map_shared(String::from("evm-account-storage"))?,
             code: provider.take_map_shared(String::from("evm-account-code"))?,
-            full_backups: provider.list_full_backups(),
+            full_backups: provider.take_map_shared(String::from("evm-state-backup-info"))?,
         })
     }
 }
 
 #[doc(hidden)]
-impl<AccountMap, CodeMap, StorageMap> EvmSchema<AccountMap, CodeMap, StorageMap>
+impl<AccountMap, CodeMap, StorageMap, FullBackups>
+    EvmSchema<AccountMap, CodeMap, StorageMap, FullBackups>
 // declaration
 where
     // account
@@ -189,6 +193,10 @@ where
     StorageMap: AsyncMap<K = (HashedAddress, H256, BlockNum)>,
     StorageMap: AsyncMap<V = H256>,
     StorageMap: AsyncMapSearch,
+
+    FullBackups: AsyncMap<K = BlockNum>,
+    FullBackups: AsyncMap<V = BlockNum>,
+    FullBackups: AsyncMapSearch,
 {
     fn last_snapshot_for_hashed_key_since(
         &self,
@@ -357,7 +365,7 @@ where
                 .set_full((key, storage_idx, block_num), storage_value);
         }
         self.accounts.set_full((key, block_num), state);
-        self.full_backups.insert(block_num);
+        self.full_backups.set(block_num, block_num);
     }
 }
 
