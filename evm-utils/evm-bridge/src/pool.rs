@@ -1003,7 +1003,12 @@ mod tests {
         let secret_key: evm_state::SecretKey = evm::SecretKey::from_slice(secret_key).unwrap();
 
         let (tx, _) = mpsc::channel(1);
-        PooledTransaction::new(tx_create.sign(&secret_key, Some(111)), HashSet::new(), tx).unwrap()
+        PooledTransaction::new(
+            tx_create.sign(&secret_key, Some(111)),
+            HashSet::new(),
+            Some(tx),
+        )
+        .unwrap()
     }
 
     fn import(pool: &mut Pool, tx: PooledTransaction) {
