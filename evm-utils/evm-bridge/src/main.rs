@@ -849,6 +849,9 @@ struct Args {
     /// Maximum number of blocks to return in eth_getLogs rpc.
     #[structopt(long = "max-logs-block-count", default_value = "500")]
     max_logs_blocks: u64,
+
+    #[structopt(long = "num-threads", default_value = "4")]
+    num_threads: u64,
 }
 
 impl Args {
@@ -945,7 +948,7 @@ async fn main(args: Args) -> StdResult<(), Box<dyn std::error::Error>> {
     .cors(DomainsValidation::AllowOnly(vec![
         AccessControlAllowOrigin::Any,
     ]))
-    .threads(4)
+    .threads(args.num_threads as usize)
     .cors_max_age(86400)
     .start_http(&binding_address)
     .expect("Unable to start EVM bridge server");
