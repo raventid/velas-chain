@@ -3,8 +3,8 @@ name: Tests
 on: 
   pull_request:
     branches: [develop]
-  schedule:
-    - cron: "0 10 * * *"
+  # schedule:
+  #   - cron: "0 10 * * *"
 
 jobs:  
   checks:
@@ -32,6 +32,8 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
     steps:
       - uses: actions/checkout@v2
       - name: install dependencies
