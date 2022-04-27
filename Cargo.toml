@@ -69,6 +69,7 @@ members = [
     "scripts",
     "stake-accounts",
     "stake-monitor",
+    "state-rpc",
     "sys-tuner",
     "tokens",
     "transaction-status",
