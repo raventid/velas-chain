@@ -324,83 +324,83 @@ mod tests {
     use tarpc::transport;
     use tokio::{runtime::Runtime, time::sleep};
 
-    #[test]
-    fn test_banks_client_new() {
-        let (client_transport, _server_transport) = transport::channel::unbounded();
-        BanksClient::new(client::Config::default(), client_transport);
-    }
+    // #[test]
+    // fn test_banks_client_new() {
+    //     let (client_transport, _server_transport) = transport::channel::unbounded();
+    //     BanksClient::new(client::Config::default(), client_transport);
+    // }
 
-    #[test]
-    fn test_banks_server_transfer_via_server() -> io::Result<()> {
-        // This test shows the preferred way to interact with BanksServer.
-        // It creates a runtime explicitly (no globals via tokio macros) and calls
-        // `runtime.block_on()` just once, to run all the async code.
+    // #[test]
+    // fn test_banks_server_transfer_via_server() -> io::Result<()> {
+    //     // This test shows the preferred way to interact with BanksServer.
+    //     // It creates a runtime explicitly (no globals via tokio macros) and calls
+    //     // `runtime.block_on()` just once, to run all the async code.
 
-        let genesis = create_genesis_config(10);
-        let bank = Bank::new(&genesis.genesis_config);
-        let slot = bank.slot();
-        let block_commitment_cache = Arc::new(RwLock::new(
-            BlockCommitmentCache::new_for_tests_with_slots(slot, slot),
-        ));
-        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+    //     let genesis = create_genesis_config(10);
+    //     let bank = Bank::new(&genesis.genesis_config);
+    //     let slot = bank.slot();
+    //     let block_commitment_cache = Arc::new(RwLock::new(
+    //         BlockCommitmentCache::new_for_tests_with_slots(slot, slot),
+    //     ));
+    //     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
-        let bob_pubkey = solana_sdk::pubkey::new_rand();
-        let mint_pubkey = genesis.mint_keypair.pubkey();
-        let instruction = system_instruction::transfer(&mint_pubkey, &bob_pubkey, 1);
-        let message = Message::new(&[instruction], Some(&mint_pubkey));
+    //     let bob_pubkey = solana_sdk::pubkey::new_rand();
+    //     let mint_pubkey = genesis.mint_keypair.pubkey();
+    //     let instruction = system_instruction::transfer(&mint_pubkey, &bob_pubkey, 1);
+    //     let message = Message::new(&[instruction], Some(&mint_pubkey));
 
-        Runtime::new()?.block_on(async {
-            let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
-            let mut banks_client = start_client(client_transport).await?;
+    //     Runtime::new()?.block_on(async {
+    //         let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
+    //         let mut banks_client = start_client(client_transport).await?;
 
-            let recent_blockhash = banks_client.get_recent_blockhash().await?;
-            let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
-            banks_client.process_transaction(transaction).await.unwrap();
-            assert_eq!(banks_client.get_balance(bob_pubkey).await?, 1);
-            Ok(())
-        })
-    }
+    //         let recent_blockhash = banks_client.get_recent_blockhash().await?;
+    //         let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
+    //         banks_client.process_transaction(transaction).await.unwrap();
+    //         assert_eq!(banks_client.get_balance(bob_pubkey).await?, 1);
+    //         Ok(())
+    //     })
+    // }
 
-    #[test]
-    fn test_banks_server_transfer_via_client() -> io::Result<()> {
-        // The caller may not want to hold the connection open until the transaction
-        // is processed (or blockhash expires). In this test, we verify the
-        // server-side functionality is available to the client.
+    // #[test]
+    // fn test_banks_server_transfer_via_client() -> io::Result<()> {
+    //     // The caller may not want to hold the connection open until the transaction
+    //     // is processed (or blockhash expires). In this test, we verify the
+    //     // server-side functionality is available to the client.
 
-        let genesis = create_genesis_config(10);
-        let bank = Bank::new(&genesis.genesis_config);
-        let slot = bank.slot();
-        let block_commitment_cache = Arc::new(RwLock::new(
-            BlockCommitmentCache::new_for_tests_with_slots(slot, slot),
-        ));
-        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+    //     let genesis = create_genesis_config(10);
+    //     let bank = Bank::new(&genesis.genesis_config);
+    //     let slot = bank.slot();
+    //     let block_commitment_cache = Arc::new(RwLock::new(
+    //         BlockCommitmentCache::new_for_tests_with_slots(slot, slot),
+    //     ));
+    //     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
 
-        let mint_pubkey = &genesis.mint_keypair.pubkey();
-        let bob_pubkey = solana_sdk::pubkey::new_rand();
-        let instruction = system_instruction::transfer(mint_pubkey, &bob_pubkey, 1);
-        let message = Message::new(&[instruction], Some(mint_pubkey));
+    //     let mint_pubkey = &genesis.mint_keypair.pubkey();
+    //     let bob_pubkey = solana_sdk::pubkey::new_rand();
+    //     let instruction = system_instruction::transfer(mint_pubkey, &bob_pubkey, 1);
+    //     let message = Message::new(&[instruction], Some(mint_pubkey));
 
-        Runtime::new()?.block_on(async {
-            let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
-            let mut banks_client = start_client(client_transport).await?;
-            let (_, recent_blockhash, last_valid_slot) = banks_client.get_fees().await?;
-            let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
-            let signature = transaction.signatures[0];
-            banks_client.send_transaction(transaction).await?;
+    //     Runtime::new()?.block_on(async {
+    //         let client_transport = start_local_server(bank_forks, block_commitment_cache).await;
+    //         let mut banks_client = start_client(client_transport).await?;
+    //         let (_, recent_blockhash, last_valid_slot) = banks_client.get_fees().await?;
+    //         let transaction = Transaction::new(&[&genesis.mint_keypair], message, recent_blockhash);
+    //         let signature = transaction.signatures[0];
+    //         banks_client.send_transaction(transaction).await?;
 
-            let mut status = banks_client.get_transaction_status(signature).await?;
+    //         let mut status = banks_client.get_transaction_status(signature).await?;
 
-            while status.is_none() {
-                let root_slot = banks_client.get_root_slot().await?;
-                if root_slot > last_valid_slot {
-                    break;
-                }
-                sleep(Duration::from_millis(100)).await;
-                status = banks_client.get_transaction_status(signature).await?;
-            }
-            assert!(status.unwrap().err.is_none());
-            assert_eq!(banks_client.get_balance(bob_pubkey).await?, 1);
-            Ok(())
-        })
-    }
+    //         while status.is_none() {
+    //             let root_slot = banks_client.get_root_slot().await?;
+    //             if root_slot > last_valid_slot {
+    //                 break;
+    //             }
+    //             sleep(Duration::from_millis(100)).await;
+    //             status = banks_client.get_transaction_status(signature).await?;
+    //         }
+    //         assert!(status.unwrap().err.is_none());
+    //         assert_eq!(banks_client.get_balance(bob_pubkey).await?, 1);
+    //         Ok(())
+    //     })
+    // }
 }

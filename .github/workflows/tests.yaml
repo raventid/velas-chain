@@ -3,52 +3,37 @@ name: Tests
 on: 
   pull_request:
     branches: [develop]
-  schedule:
-    - cron: "0 10 * * *"
+  # schedule:
+  #   - cron: "0 10 * * *"
+  #
+env:
+  CARGO_INCREMENTAL: 0
 
 jobs:  
-  checks:
-    name: check
-    container:
-      image: ubuntu:20.04
-    runs-on: build
+   test:
+    name: test
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
     steps:
       - uses: actions/checkout@v2
       - name: install dependencies
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive  apt-get -q -y install curl git libssl-dev libudev-dev make pkg-config zlib1g-dev llvm clang      
+          DEBIAN_FRONTEND=noninteractive apt-get -q -y install curl git libssl-dev libudev-dev make pkg-config zlib1g-dev llvm clang
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: 1.59
-          components: clippy
-      - name: Run cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -Dwarnings
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: install dependencies
+      - name: Strip debug symbols from binary
         run: |
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get -q -y install curl git libssl-dev libudev-dev make pkg-config zlib1g-dev llvm clang      
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: 1.59
-      - name: Setting limits
+          sed '$d' Cargo.toml
+          echo "debug = 0" >> Cargo.toml
+      - name: Setting increased OS limits
         run: |
-          sudo sysctl -w fs.file-max=5000000
-          sudo sysctl -w vm.max_map_count=5000000
+          sysctl -w fs.file-max=5000000
+          sysctl -w vm.max_map_count=5000000
       - name: Run cargo test
         uses: actions-rs/cargo@v1
         with:
           command: test
-

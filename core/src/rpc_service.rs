@@ -474,63 +474,63 @@ mod tests {
     use std::io::Write;
     use std::net::{IpAddr, Ipv4Addr};
 
-    #[test]
-    fn test_rpc_new() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(10_000);
-        let exit = Arc::new(AtomicBool::new(false));
-        let validator_exit = create_validator_exit(&exit);
-        let bank = Bank::new(&genesis_config);
-        let cluster_info = Arc::new(ClusterInfo::default());
-        let ip_addr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
-        let rpc_addr = SocketAddr::new(
-            ip_addr,
-            solana_net_utils::find_available_port_in_range(ip_addr, (10000, 65535)).unwrap(),
-        );
-        let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
-        let ledger_path = get_tmp_ledger_path!();
-        let blockstore = Arc::new(Blockstore::open(&ledger_path).unwrap());
-        let block_commitment_cache = Arc::new(RwLock::new(BlockCommitmentCache::default()));
-        let optimistically_confirmed_bank =
-            OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
-        let mut rpc_service = JsonRpcService::new(
-            rpc_addr,
-            JsonRpcConfig::default(),
-            None,
-            bank_forks,
-            block_commitment_cache,
-            blockstore,
-            cluster_info,
-            None,
-            Hash::default(),
-            &PathBuf::from("farf"),
-            validator_exit,
-            None,
-            Arc::new(AtomicBool::new(false)),
-            optimistically_confirmed_bank,
-            1000,
-            1,
-            Arc::new(MaxSlots::default()),
-            Arc::new(LeaderScheduleCache::default()),
-            Arc::new(AtomicU64::default()),
-            None,
-        );
-        let thread = rpc_service.thread_hdl.thread();
-        assert_eq!(thread.name().unwrap(), "solana-jsonrpc");
+    // #[test]
+    // fn test_rpc_new() {
+    //     let GenesisConfigInfo {
+    //         genesis_config,
+    //         mint_keypair,
+    //         ..
+    //     } = create_genesis_config(10_000);
+    //     let exit = Arc::new(AtomicBool::new(false));
+    //     let validator_exit = create_validator_exit(&exit);
+    //     let bank = Bank::new(&genesis_config);
+    //     let cluster_info = Arc::new(ClusterInfo::default());
+    //     let ip_addr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+    //     let rpc_addr = SocketAddr::new(
+    //         ip_addr,
+    //         solana_net_utils::find_available_port_in_range(ip_addr, (10000, 65535)).unwrap(),
+    //     );
+    //     let bank_forks = Arc::new(RwLock::new(BankForks::new(bank)));
+    //     let ledger_path = get_tmp_ledger_path!();
+    //     let blockstore = Arc::new(Blockstore::open(&ledger_path).unwrap());
+    //     let block_commitment_cache = Arc::new(RwLock::new(BlockCommitmentCache::default()));
+    //     let optimistically_confirmed_bank =
+    //         OptimisticallyConfirmedBank::locked_from_bank_forks_root(&bank_forks);
+    //     let mut rpc_service = JsonRpcService::new(
+    //         rpc_addr,
+    //         JsonRpcConfig::default(),
+    //         None,
+    //         bank_forks,
+    //         block_commitment_cache,
+    //         blockstore,
+    //         cluster_info,
+    //         None,
+    //         Hash::default(),
+    //         &PathBuf::from("farf"),
+    //         validator_exit,
+    //         None,
+    //         Arc::new(AtomicBool::new(false)),
+    //         optimistically_confirmed_bank,
+    //         1000,
+    //         1,
+    //         Arc::new(MaxSlots::default()),
+    //         Arc::new(LeaderScheduleCache::default()),
+    //         Arc::new(AtomicU64::default()),
+    //         None,
+    //     );
+    //     let thread = rpc_service.thread_hdl.thread();
+    //     assert_eq!(thread.name().unwrap(), "solana-jsonrpc");
 
-        assert_eq!(
-            10_000,
-            rpc_service
-                .request_processor
-                .get_balance(&mint_keypair.pubkey(), None)
-                .value
-        );
-        rpc_service.exit();
-        rpc_service.join().unwrap();
-    }
+    //     assert_eq!(
+    //         10_000,
+    //         rpc_service
+    //             .request_processor
+    //             .get_balance(&mint_keypair.pubkey(), None)
+    //             .value
+    //     );
+    //     rpc_service.exit();
+    //     rpc_service.join().unwrap();
+    // }
 
     fn create_bank_forks() -> Arc<RwLock<BankForks>> {
         let GenesisConfigInfo {

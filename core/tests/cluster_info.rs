@@ -225,10 +225,10 @@ fn test_retransmit_medium_equal_stakes() {
 }
 
 // Scale down the network and make sure many layers are used
-#[test]
-#[serial]
-fn test_retransmit_large() {
-    let num_nodes = 4000;
-    let stakes: Vec<_> = (0..num_nodes).collect();
-    run_simulation(&stakes, 2);
-}
+// #[test]
+// #[serial]
+// fn test_retransmit_large() {
+//     let num_nodes = 4000;
+//     let stakes: Vec<_> = (0..num_nodes).collect();
+//     run_simulation(&stakes, 2);
+// }
