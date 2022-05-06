@@ -29,3 +29,5 @@ log-*/
 /spl_*.so
 
 .DS_Store
+
+/state-rpc/.tmp/
